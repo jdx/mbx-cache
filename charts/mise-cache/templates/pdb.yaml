@@ -1,0 +1,11 @@
+{{- if gt (int .Values.replicaCount) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}-mise-cache
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: mise-cache, app.kubernetes.io/instance: {{ .Release.Name }}}
+{{- end }}
+

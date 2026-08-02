@@ -1,0 +1,50 @@
+services:
+  cache:
+    build: .
+    environment:
+      MISE_CACHE_STORAGE: s3
+      MISE_CACHE_DATABASE_URL: postgres://mise_cache:mise_cache@postgres/mise_cache
+      MISE_CACHE_S3_BUCKET: mise-cache
+      MISE_CACHE_S3_ENDPOINT: http://minio:9000
+      MISE_CACHE_S3_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: mise-cache
+      AWS_SECRET_ACCESS_KEY: mise-cache-development
+      MISE_CACHE_TOKENS_JSON: '[{"token":"development-token","read":["default"],"write":["default"]}]'
+    ports: ["8080:8080"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      create-bucket: {condition: service_completed_successfully}
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: mise_cache
+      POSTGRES_PASSWORD: mise_cache
+      POSTGRES_DB: mise_cache
+    volumes: ["postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mise_cache"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+  minio:
+    image: quay.io/minio/minio:latest
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: mise-cache
+      MINIO_ROOT_PASSWORD: mise-cache-development
+    volumes: ["objects:/data"]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+  create-bucket:
+    image: quay.io/minio/mc:latest
+    depends_on:
+      minio: {condition: service_healthy}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["mc alias set local http://minio:9000 mise-cache mise-cache-development && mc mb --ignore-existing local/mise-cache"]
+volumes:
+  postgres: {}
+  objects: {}
+
