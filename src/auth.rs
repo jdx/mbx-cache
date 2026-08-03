@@ -20,6 +20,9 @@ use crate::server::ApiError;
 
 const DEFAULT_JWKS_REFRESH_SECONDS: u64 = 300;
 const DEFAULT_CLOCK_SKEW_SECONDS: u64 = 60;
+const MIN_JWKS_REFRESH_SECONDS: u64 = 30;
+const INITIAL_FETCH_ATTEMPTS: u32 = 3;
+const INITIAL_FETCH_BACKOFF_MILLIS: u64 = 250;
 const DEFAULT_ALGORITHMS: &[Algorithm] = &[
     Algorithm::RS256,
     Algorithm::RS384,
@@ -101,11 +104,13 @@ struct OidcProvider {
     client: reqwest::Client,
     keys: Arc<RwLock<CachedKeys>>,
     refresh: Arc<Mutex<()>>,
+    min_refresh_interval: Duration,
 }
 
 struct CachedKeys {
     set: JwkSet,
     fetched_at: Instant,
+    attempted_at: Instant,
 }
 
 #[derive(Clone)]
@@ -215,34 +220,10 @@ impl OidcProvider {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()?;
-        let (jwks_uri, advertised_algorithms) = if let Some(uri) = &config.jwks_uri {
-            (uri.clone(), Vec::new())
-        } else {
-            let discovery_uri = config.discovery_uri.clone().unwrap_or_else(|| {
-                format!(
-                    "{}/.well-known/openid-configuration",
-                    config.issuer.trim_end_matches('/')
-                )
-            });
-            let document: DiscoveryDocument = fetch_json(&client, &discovery_uri)
-                .await
-                .with_context(|| format!("discover OIDC issuer {}", config.issuer))?;
-            if document.issuer != config.issuer {
-                bail!(
-                    "OIDC discovery issuer mismatch: configured {:?}, received {:?}",
-                    config.issuer,
-                    document.issuer
-                );
-            }
-            (
-                document.jwks_uri,
-                document.id_token_signing_alg_values_supported,
-            )
-        };
+        let (jwks_uri, advertised_algorithms, set) =
+            fetch_initial_provider_data(&client, &config).await?;
         let algorithms = configured_algorithms(&config.algorithms, &advertised_algorithms)?;
-        let set = fetch_jwks(&client, &jwks_uri)
-            .await
-            .with_context(|| format!("fetch OIDC keys for {}", config.issuer))?;
+        let now = Instant::now();
         Ok(Self {
             config: Arc::new(config),
             algorithms: Arc::new(algorithms),
@@ -250,9 +231,11 @@ impl OidcProvider {
             client,
             keys: Arc::new(RwLock::new(CachedKeys {
                 set,
-                fetched_at: Instant::now(),
+                fetched_at: now,
+                attempted_at: now,
             })),
             refresh: Arc::new(Mutex::new(())),
+            min_refresh_interval: Duration::from_secs(MIN_JWKS_REFRESH_SECONDS),
         })
     }
 
@@ -282,15 +265,13 @@ impl OidcProvider {
                 .set
                 .find(kid)
                 .context("JWT signing key was not found")?;
-            if jwk
+            if jwk.common.key_algorithm.is_some_and(|algorithm| {
+                Algorithm::from_str(&algorithm.to_string()).ok() != Some(header.alg)
+            }) || jwk
                 .common
-                .key_algorithm
-                .is_some_and(|algorithm| algorithm.to_string() != format!("{:?}", header.alg))
-                || jwk
-                    .common
-                    .public_key_use
-                    .as_ref()
-                    .is_some_and(|usage| usage != &PublicKeyUse::Signature)
+                .public_key_use
+                .as_ref()
+                .is_some_and(|usage| usage != &PublicKeyUse::Signature)
                 || jwk
                     .common
                     .key_operations
@@ -317,12 +298,15 @@ impl OidcProvider {
         let _guard = self.refresh.lock().await;
         {
             let keys = self.keys.read().await;
-            if keys.fetched_at.elapsed() < Duration::from_secs(self.config.jwks_refresh_seconds)
-                && keys.set.find(kid).is_some()
+            if keys.attempted_at.elapsed() < self.min_refresh_interval
+                || (keys.fetched_at.elapsed()
+                    < Duration::from_secs(self.config.jwks_refresh_seconds)
+                    && keys.set.find(kid).is_some())
             {
                 return Ok(());
             }
         }
+        self.keys.write().await.attempted_at = Instant::now();
         let set = fetch_jwks(&self.client, &self.jwks_uri).await?;
         let mut keys = self.keys.write().await;
         keys.set = set;
@@ -414,16 +398,80 @@ fn configured_algorithms(
     };
     algorithms.retain(|algorithm| DEFAULT_ALGORITHMS.contains(algorithm));
     if !advertised.is_empty() {
-        algorithms.retain(|algorithm| {
-            advertised
-                .iter()
-                .any(|name| name == &format!("{algorithm:?}"))
-        });
+        let advertised = advertised
+            .iter()
+            .filter_map(|name| Algorithm::from_str(name).ok())
+            .collect::<Vec<_>>();
+        algorithms.retain(|algorithm| advertised.contains(algorithm));
     }
     if algorithms.is_empty() {
         bail!("OIDC provider has no mutually supported asymmetric signing algorithm");
     }
     Ok(algorithms)
+}
+
+async fn fetch_initial_provider_data(
+    client: &reqwest::Client,
+    config: &OidcProviderConfig,
+) -> anyhow::Result<(String, Vec<String>, JwkSet)> {
+    let mut last_error = None;
+    for attempt in 1..=INITIAL_FETCH_ATTEMPTS {
+        match fetch_provider_data(client, config).await {
+            Ok(data) => return Ok(data),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    issuer = config.issuer,
+                    attempt,
+                    max_attempts = INITIAL_FETCH_ATTEMPTS,
+                    "initial OIDC provider fetch failed"
+                );
+                last_error = Some(error);
+                if attempt < INITIAL_FETCH_ATTEMPTS {
+                    tokio::time::sleep(Duration::from_millis(
+                        INITIAL_FETCH_BACKOFF_MILLIS * u64::from(attempt),
+                    ))
+                    .await;
+                }
+            }
+        }
+    }
+    Err(last_error.expect("at least one OIDC fetch attempt"))
+        .with_context(|| format!("initialize OIDC issuer {}", config.issuer))
+}
+
+async fn fetch_provider_data(
+    client: &reqwest::Client,
+    config: &OidcProviderConfig,
+) -> anyhow::Result<(String, Vec<String>, JwkSet)> {
+    let (jwks_uri, advertised_algorithms) = if let Some(uri) = &config.jwks_uri {
+        (uri.clone(), Vec::new())
+    } else {
+        let discovery_uri = config.discovery_uri.clone().unwrap_or_else(|| {
+            format!(
+                "{}/.well-known/openid-configuration",
+                config.issuer.trim_end_matches('/')
+            )
+        });
+        let document: DiscoveryDocument = fetch_json(client, &discovery_uri)
+            .await
+            .with_context(|| format!("discover OIDC issuer {}", config.issuer))?;
+        if document.issuer != config.issuer {
+            bail!(
+                "OIDC discovery issuer mismatch: configured {:?}, received {:?}",
+                config.issuer,
+                document.issuer
+            );
+        }
+        (
+            document.jwks_uri,
+            document.id_token_signing_alg_values_supported,
+        )
+    };
+    let set = fetch_jwks(client, &jwks_uri)
+        .await
+        .with_context(|| format!("fetch OIDC keys for {}", config.issuer))?;
+    Ok((jwks_uri, advertised_algorithms, set))
 }
 
 async fn fetch_jwks(client: &reqwest::Client, uri: &str) -> anyhow::Result<JwkSet> {
@@ -519,7 +567,9 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Json, Router, extract::State, routing::get};
+    use axum::{
+        Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get,
+    };
     use jsonwebtoken::{EncodingKey, Header, encode};
     use rsa::{
         RsaPrivateKey, RsaPublicKey,
@@ -527,7 +577,10 @@ mod tests {
         rand_core::OsRng,
         traits::PublicKeyParts,
     };
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
     use tokio::net::TcpListener;
 
     #[test]
@@ -559,6 +612,38 @@ mod tests {
     #[test]
     fn rejects_hmac_algorithms() {
         assert!(configured_algorithms(&["HS256".into()], &[]).is_err());
+    }
+
+    #[tokio::test]
+    async fn retries_initial_jwks_fetches() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route(
+                "/jwks",
+                get(|State(attempts): State<Arc<AtomicUsize>>| async move {
+                    if attempts.fetch_add(1, Ordering::SeqCst) < 2 {
+                        StatusCode::SERVICE_UNAVAILABLE.into_response()
+                    } else {
+                        Json(serde_json::json!({"keys":[]})).into_response()
+                    }
+                }),
+            )
+            .with_state(attempts.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let providers = serde_json::json!([{
+            "issuer":"https://issuer.example",
+            "audiences":["https://cache.example"],
+            "jwks_uri":format!("http://{address}/jwks"),
+            "rules":[{"claims":{"repository":"jdx/mise"}, "read":["jdx/mise"]}]
+        }]);
+
+        Authorizer::new(None, Some(&providers.to_string()), false)
+            .await
+            .unwrap();
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        server.abort();
     }
 
     #[tokio::test]
@@ -596,7 +681,7 @@ mod tests {
                 "write":["jdx/mise"]
             }]
         }]);
-        let authorizer = Authorizer::new(None, Some(&providers.to_string()), false)
+        let mut authorizer = Authorizer::new(None, Some(&providers.to_string()), false)
             .await
             .unwrap();
         let now = SystemTime::now()
@@ -674,6 +759,13 @@ mod tests {
             &EncodingKey::from_rsa_pem(rotated_pem.as_bytes()).unwrap(),
         )
         .unwrap();
+        assert!(
+            authorizer
+                .authorize(&request_headers(&rotated_token, "jdx/mise"), Access::Write)
+                .await
+                .is_err()
+        );
+        authorizer.oidc[0].min_refresh_interval = Duration::ZERO;
         assert!(
             authorizer
                 .authorize(&request_headers(&rotated_token, "jdx/mise"), Access::Write)

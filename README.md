@@ -104,10 +104,10 @@ Optional provider settings are:
 | `discovery_uri` | `<issuer>/.well-known/openid-configuration` | Override OIDC discovery |
 | `jwks_uri` | discovered | Use an explicit JWKS endpoint and skip discovery |
 | `algorithms` | supported asymmetric algorithms | Restrict accepted JWT signing algorithms |
-| `jwks_refresh_seconds` | `300` | Refresh interval; an unknown key ID also triggers an immediate refresh |
+| `jwks_refresh_seconds` | `300` | Refresh interval; an unknown key ID also requests a refresh |
 | `clock_skew_seconds` | `60` | Leeway for expiry and not-before validation |
 
-The service fetches keys at startup, refreshes stale keys during token validation, and immediately refreshes the JWKS when a provider rotates to an unknown key ID. If a periodic refresh temporarily fails, an already-cached key remains usable; an unknown key never does. Use HTTPS for discovery and JWKS endpoints outside a trusted private network.
+The service makes three bounded attempts to fetch provider metadata and keys at startup. It refreshes stale keys during token validation, and an unknown key ID requests a JWKS refresh. Refresh attempts have a 30-second cooldown to prevent attacker-controlled key IDs from amplifying outbound requests. If a periodic refresh temporarily fails, an already-cached key remains usable; an unknown key never does. Use HTTPS for discovery and JWKS endpoints outside a trusted private network.
 
 ### GitHub Actions OIDC
 
