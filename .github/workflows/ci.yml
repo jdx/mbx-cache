@@ -13,12 +13,12 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.14.9
-      - run: terraform -chdir=deploy/hetzner/terraform fmt -check -recursive
-      - run: terraform -chdir=deploy/hetzner/terraform init -backend=false
-      - run: terraform -chdir=deploy/hetzner/terraform validate
+      - run: terraform -chdir=deploy/ovh/terraform fmt -check -recursive
+      - run: terraform -chdir=deploy/ovh/terraform init -backend=false
+      - run: terraform -chdir=deploy/ovh/terraform validate
       - run: pipx install ansible-core==2.21.2
-      - run: ansible-playbook --syntax-check -i '127.0.0.1,' deploy/hetzner/ansible/playbook.yml
-      - run: shellcheck deploy/hetzner/deploy.sh
+      - run: ansible-playbook --syntax-check -i '127.0.0.1,' deploy/ovh/ansible/playbook.yml
+      - run: shellcheck deploy/ovh/deploy.sh
   test:
     runs-on: ubuntu-latest
     steps:

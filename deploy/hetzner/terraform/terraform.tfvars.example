@@ -1,7 +1,0 @@
-domain                       = "cache.mise.jdx.dev"
-cloudflare_zone_id           = "replace-me"
-ssh_key_name                 = "replace-me"
-ssh_source_cidrs             = ["203.0.113.10/32"]
-object_storage_bucket        = "mise-cache-production"
-object_storage_location      = "nbg1"
-location                     = "nbg1"

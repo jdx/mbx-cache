@@ -7,10 +7,11 @@
     cache_domain: "{{ lookup('env', 'MISE_CACHE_DOMAIN') }}"
     cache_image: "{{ lookup('env', 'MISE_CACHE_IMAGE') }}"
     database_password: "{{ lookup('env', 'MISE_CACHE_DATABASE_PASSWORD') }}"
-    object_storage_access_key: "{{ lookup('env', 'HETZNER_OBJECT_STORAGE_ACCESS_KEY') }}"
-    object_storage_secret_key: "{{ lookup('env', 'HETZNER_OBJECT_STORAGE_SECRET_KEY') }}"
-    object_storage_location: "{{ lookup('env', 'HETZNER_OBJECT_STORAGE_LOCATION') | default('nbg1', true) }}"
-    object_storage_bucket: "{{ lookup('env', 'HETZNER_OBJECT_STORAGE_BUCKET') }}"
+    r2_access_key_id: "{{ lookup('env', 'R2_ACCESS_KEY_ID') }}"
+    r2_secret_access_key: "{{ lookup('env', 'R2_SECRET_ACCESS_KEY') }}"
+    r2_endpoint: "{{ lookup('env', 'R2_ENDPOINT') }}"
+    r2_bucket: "{{ lookup('env', 'R2_BUCKET') }}"
+    ssh_source_cidr: "{{ lookup('env', 'OVH_SSH_SOURCE_CIDR') | default('0.0.0.0/0', true) }}"
     github_repository: "{{ lookup('env', 'MISE_CACHE_GITHUB_REPOSITORY') | default('jdx/mise', true) }}"
     github_owner_id: "{{ lookup('env', 'MISE_CACHE_GITHUB_OWNER_ID') | default('216188', true) }}"
     oidc_providers:
@@ -49,13 +50,14 @@
           - cache_domain | length > 0
           - cache_image | length > 0
           - database_password is match('^[A-Za-z0-9_-]{24,}$')
-          - object_storage_access_key | length > 0
-          - object_storage_secret_key | length > 0
-          - object_storage_bucket | length > 0
+          - r2_access_key_id | length > 0
+          - r2_secret_access_key | length > 0
+          - r2_endpoint is match('^https://[a-f0-9]+[.]r2[.]cloudflarestorage[.]com$')
+          - r2_bucket | length > 0
         fail_msg: >-
           Set MISE_CACHE_DOMAIN, MISE_CACHE_IMAGE, MISE_CACHE_DATABASE_PASSWORD
-          (at least 24 URL-safe characters), HETZNER_OBJECT_STORAGE_ACCESS_KEY,
-          HETZNER_OBJECT_STORAGE_SECRET_KEY, and HETZNER_OBJECT_STORAGE_BUCKET.
+          (at least 24 URL-safe characters), R2_ACCESS_KEY_ID,
+          R2_SECRET_ACCESS_KEY, R2_ENDPOINT, and R2_BUCKET.
       no_log: true
 
     - name: Install runtime packages
@@ -64,6 +66,8 @@
           - ca-certificates
           - docker.io
           - docker-compose-v2
+          - fail2ban
+          - ufw
           - unattended-upgrades
         state: present
         update_cache: true
@@ -75,6 +79,7 @@
         state: started
       loop:
         - docker
+        - fail2ban
         - unattended-upgrades
 
     - name: Create deployment directory
@@ -84,6 +89,30 @@
         owner: root
         group: root
         mode: "0750"
+
+    - name: Reset host firewall to the declared ruleset
+      ansible.builtin.command: ufw --force reset
+      changed_when: false
+
+    - name: Configure host firewall defaults
+      ansible.builtin.command: "ufw default {{ item.policy }} {{ item.direction }}"
+      loop:
+        - {policy: deny, direction: incoming}
+        - {policy: allow, direction: outgoing}
+      changed_when: false
+
+    - name: Allow public web traffic
+      ansible.builtin.command: "ufw allow {{ item }}/tcp"
+      loop: [80, 443]
+      changed_when: false
+
+    - name: Restrict SSH traffic
+      ansible.builtin.command: "ufw allow from {{ ssh_source_cidr }} to any port 22 proto tcp"
+      changed_when: false
+
+    - name: Enable host firewall
+      ansible.builtin.command: ufw --force enable
+      changed_when: false
 
     - name: Install Compose configuration
       ansible.builtin.template:

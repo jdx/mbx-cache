@@ -11,7 +11,7 @@
 - Static and OIDC bearer authorization with per-namespace read/write grants
 - Recursive output-tree validation before an action result becomes visible
 - Batch missing-blob queries and Prometheus metrics
-- Docker Compose, Helm, and Terraform-managed Hetzner deployments
+- Docker Compose, Helm, and Terraform-managed OVH deployments
 
 ## Quick start
 
@@ -142,9 +142,9 @@ Treat the output as a secret even though it is short-lived. Set the audience in 
 
 - `docker-compose.yml` runs a local development stack with PostgreSQL and MinIO.
 - `charts/mise-cache` runs a horizontally scalable Kubernetes deployment.
-- [`deploy/hetzner`](deploy/hetzner/README.md) provisions a low-cost production
+- [`deploy/ovh`](deploy/ovh/README.md) provisions a low-cost US production
   instance with Terraform and converges Caddy, PostgreSQL, and mise-cache with
-  Ansible. Cache blobs use Hetzner Object Storage.
+  Ansible. Cache blobs use Cloudflare R2.
 
 ## API
 

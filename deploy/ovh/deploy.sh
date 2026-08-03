@@ -14,8 +14,8 @@ done
 
 server_ip="$("$terraform_command" -chdir=terraform output -raw server_ipv4)"
 export MISE_CACHE_DOMAIN="${MISE_CACHE_DOMAIN:-$("$terraform_command" -chdir=terraform output -raw cache_url | sed 's#^https://##')}"
-export HETZNER_OBJECT_STORAGE_BUCKET="${HETZNER_OBJECT_STORAGE_BUCKET:-$("$terraform_command" -chdir=terraform output -raw object_storage_bucket)}"
-export HETZNER_OBJECT_STORAGE_LOCATION="${HETZNER_OBJECT_STORAGE_LOCATION:-nbg1}"
+export R2_BUCKET="${R2_BUCKET:-$("$terraform_command" -chdir=terraform output -raw r2_bucket)}"
+export R2_ENDPOINT="${R2_ENDPOINT:-$("$terraform_command" -chdir=terraform output -raw r2_endpoint)}"
 
 if [[ -z "${MISE_CACHE_DATABASE_PASSWORD:-}" ]]; then
   echo "MISE_CACHE_DATABASE_PASSWORD must be set" >&2
@@ -24,5 +24,5 @@ fi
 
 ansible-playbook \
   --inventory "${server_ip}," \
-  --user root \
+  --user "${OVH_SSH_USER:-ubuntu}" \
   ansible/playbook.yml
