@@ -51,6 +51,10 @@ pub struct Config {
     #[arg(long, env = "MISE_CACHE_TOKENS_JSON", hide_env_values = true)]
     pub tokens_json: Option<String>,
 
+    /// JSON array of trusted OIDC providers and authorization rules. See README.md.
+    #[arg(long, env = "MISE_CACHE_OIDC_PROVIDERS_JSON", hide_env_values = true)]
+    pub oidc_providers_json: Option<String>,
+
     #[arg(long, env = "MISE_CACHE_ALLOW_ANONYMOUS", default_value_t = false)]
     pub allow_anonymous: bool,
 

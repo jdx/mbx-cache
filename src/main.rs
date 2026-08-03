@@ -28,7 +28,12 @@ async fn main() -> Result<()> {
     let state = server::AppState::new(
         blobs,
         metadata,
-        auth::Authorizer::new(config.tokens_json.as_deref(), config.allow_anonymous)?,
+        auth::Authorizer::new(
+            config.tokens_json.as_deref(),
+            config.oidc_providers_json.as_deref(),
+            config.allow_anonymous,
+        )
+        .await?,
         config.max_blob_bytes,
     );
     let app = server::router(state);
