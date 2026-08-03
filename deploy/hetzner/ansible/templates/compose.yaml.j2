@@ -1,0 +1,50 @@
+services:
+  cache:
+    image: "{{ cache_image }}"
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - staging:/tmp
+    networks: [internal]
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mise_cache
+      POSTGRES_USER: mise_cache
+      POSTGRES_PASSWORD: "{{ database_password }}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mise_cache"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    networks: [internal]
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on: [cache]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [internal]
+
+networks:
+  internal: {}
+
+volumes:
+  caddy_config: {}
+  caddy_data: {}
+  postgres: {}
+  staging: {}

@@ -11,7 +11,7 @@
 - Static and OIDC bearer authorization with per-namespace read/write grants
 - Recursive output-tree validation before an action result becomes visible
 - Batch missing-blob queries and Prometheus metrics
-- Docker Compose and Helm deployments
+- Docker Compose, Helm, and Terraform-managed Hetzner deployments
 
 ## Quick start
 
@@ -138,6 +138,14 @@ steps:
 
 Treat the output as a secret even though it is short-lived. Set the audience in the workflow to exactly one of the provider's configured audiences.
 
+## Deployment
+
+- `docker-compose.yml` runs a local development stack with PostgreSQL and MinIO.
+- `charts/mise-cache` runs a horizontally scalable Kubernetes deployment.
+- [`deploy/hetzner`](deploy/hetzner/README.md) provisions a low-cost production
+  instance with Terraform and converges Caddy, PostgreSQL, and mise-cache with
+  Ansible. Cache blobs use Hetzner Object Storage.
+
 ## API
 
 All cache requests send `Mise-Cache-Namespace` and, unless anonymous access is enabled, `Authorization: Bearer …`.
@@ -153,7 +161,9 @@ Blobs and action results are immutable. Repeating an identical write is idempote
 
 ## Operations
 
-Run multiple stateless replicas against the same PostgreSQL database and S3 bucket. Readiness and liveness probes use `/v1/status`. Scrape `/metrics` with Prometheus. S3 lifecycle policies control retention; PostgreSQL records are deliberately small and may be retained or expired by an operator-supplied job according to organizational policy.
+Run multiple stateless replicas against the same PostgreSQL database and S3 bucket. Readiness and liveness probes use `/v1/status`. Scrape `/metrics` with Prometheus.
+
+Do not expire S3 objects independently of PostgreSQL metadata. The metadata store currently assumes a registered blob remains present, so independent object expiration can leave action results pointing at missing blobs. Until coordinated garbage collection is implemented, monitor storage growth and reset the blob and metadata stores together when reclaiming space.
 
 Back up PostgreSQL and enable S3 versioning or replication as required. The service never exposes a deletion endpoint, so retention and disaster recovery remain administrative concerns.
 

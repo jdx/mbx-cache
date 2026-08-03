@@ -1,0 +1,8 @@
+{{ cache_domain }} {
+    encode zstd gzip
+
+    @metrics path /metrics
+    respond @metrics 404
+
+    reverse_proxy cache:8080
+}

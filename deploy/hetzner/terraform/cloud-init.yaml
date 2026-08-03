@@ -1,0 +1,13 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+packages:
+  - ca-certificates
+  - docker.io
+  - docker-compose-v2
+  - python3
+  - unattended-upgrades
+runcmd:
+  - [systemctl, enable, --now, docker]
+  - [install, -d, -m, "0750", /opt/mise-cache]
+  - [systemctl, enable, --now, unattended-upgrades]
