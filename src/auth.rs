@@ -110,7 +110,7 @@ struct OidcProvider {
 struct CachedKeys {
     set: JwkSet,
     fetched_at: Instant,
-    attempted_at: Instant,
+    attempted_at: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -232,7 +232,7 @@ impl OidcProvider {
             keys: Arc::new(RwLock::new(CachedKeys {
                 set,
                 fetched_at: now,
-                attempted_at: now,
+                attempted_at: None,
             })),
             refresh: Arc::new(Mutex::new(())),
             min_refresh_interval: Duration::from_secs(MIN_JWKS_REFRESH_SECONDS),
@@ -298,7 +298,9 @@ impl OidcProvider {
         let _guard = self.refresh.lock().await;
         {
             let keys = self.keys.read().await;
-            if keys.attempted_at.elapsed() < self.min_refresh_interval
+            if keys
+                .attempted_at
+                .is_some_and(|attempted_at| attempted_at.elapsed() < self.min_refresh_interval)
                 || (keys.fetched_at.elapsed()
                     < Duration::from_secs(self.config.jwks_refresh_seconds)
                     && keys.set.find(kid).is_some())
@@ -306,7 +308,7 @@ impl OidcProvider {
                 return Ok(());
             }
         }
-        self.keys.write().await.attempted_at = Instant::now();
+        self.keys.write().await.attempted_at = Some(Instant::now());
         let set = fetch_jwks(&self.client, &self.jwks_uri).await?;
         let mut keys = self.keys.write().await;
         keys.set = set;
@@ -763,12 +765,35 @@ mod tests {
             authorizer
                 .authorize(&request_headers(&rotated_token, "jdx/mise"), Access::Write)
                 .await
+                .is_ok()
+        );
+
+        *jwks.write().await = serde_json::json!({"keys":[{
+            "kty":"RSA",
+            "use":"sig",
+            "alg":"RS256",
+            "kid":"second-rotation",
+            "n":URL_SAFE_NO_PAD.encode(rotated_public.n().to_bytes_be()),
+            "e":URL_SAFE_NO_PAD.encode(rotated_public.e().to_bytes_be())
+        }]});
+        let mut second_header = Header::new(Algorithm::RS256);
+        second_header.kid = Some("second-rotation".into());
+        let second_token = encode(
+            &second_header,
+            &claims,
+            &EncodingKey::from_rsa_pem(rotated_pem.as_bytes()).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            authorizer
+                .authorize(&request_headers(&second_token, "jdx/mise"), Access::Write)
+                .await
                 .is_err()
         );
         authorizer.oidc[0].min_refresh_interval = Duration::ZERO;
         assert!(
             authorizer
-                .authorize(&request_headers(&rotated_token, "jdx/mise"), Access::Write)
+                .authorize(&request_headers(&second_token, "jdx/mise"), Access::Write)
                 .await
                 .is_ok()
         );
