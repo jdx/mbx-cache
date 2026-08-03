@@ -20,6 +20,7 @@ config:
 secret:
   existingSecret: mise-cache
   tokensKey: tokens-json
+  oidcProvidersKey: oidc-providers-json
 serviceAccount:
   create: true
   name: ""

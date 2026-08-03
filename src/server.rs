@@ -92,7 +92,7 @@ async fn get_blob(
     headers: HeaderMap,
     Path(parts): Path<(String, String, u64)>,
 ) -> Result<Response, ApiError> {
-    let namespace = state.auth.authorize(&headers, Access::Read)?;
+    let namespace = state.auth.authorize(&headers, Access::Read).await?;
     let digest = parse_digest(parts)?;
     if !state
         .metadata
@@ -125,7 +125,7 @@ async fn put_blob(
     Path(parts): Path<(String, String, u64)>,
     body: Body,
 ) -> Result<StatusCode, ApiError> {
-    let namespace = state.auth.authorize(&headers, Access::Write)?;
+    let namespace = state.auth.authorize(&headers, Access::Write).await?;
     require_immutable_precondition(&headers)?;
     let digest = parse_digest(parts)?;
     if digest.size > state.max_blob_bytes {
@@ -203,7 +203,7 @@ async fn missing_blobs(
     headers: HeaderMap,
     Json(request): Json<MissingRequest>,
 ) -> Result<Json<MissingResponse>, ApiError> {
-    let namespace = state.auth.authorize(&headers, Access::Read)?;
+    let namespace = state.auth.authorize(&headers, Access::Read).await?;
     if request.digests.len() > 10_000 {
         return Err(ApiError::bad_request(
             "at most 10000 digests may be checked",
@@ -229,7 +229,7 @@ async fn get_action_result(
     headers: HeaderMap,
     Path(parts): Path<(String, String, u64)>,
 ) -> Result<Json<ActionResultEnvelope>, ApiError> {
-    let namespace = state.auth.authorize(&headers, Access::Read)?;
+    let namespace = state.auth.authorize(&headers, Access::Read).await?;
     let action = parse_digest(parts)?;
     match state
         .metadata
@@ -254,7 +254,7 @@ async fn put_action_result(
     Path(parts): Path<(String, String, u64)>,
     Json(envelope): Json<ActionResultEnvelope>,
 ) -> Result<StatusCode, ApiError> {
-    let namespace = state.auth.authorize(&headers, Access::Write)?;
+    let namespace = state.auth.authorize(&headers, Access::Write).await?;
     require_immutable_precondition(&headers)?;
     let action = parse_digest(parts)?;
     if envelope.result.version != 1 || envelope.result.action != action {
@@ -566,7 +566,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let blobs = Arc::new(FilesystemStore::new(directory.path()).await.unwrap());
         let metadata = Arc::new(MemoryMetadata::default());
-        let auth = Authorizer::new(None, true).unwrap();
+        let auth = Authorizer::new(None, None, true).await.unwrap();
         (
             router(AppState::new(blobs, metadata, auth, 1024 * 1024)),
             directory,
