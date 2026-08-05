@@ -21,9 +21,10 @@ configuration, Git, or OVH installation metadata.
 
 The entry OVH VPS currently starts around USD 4.54/month and includes an IPv4
 address, daily backup, and unlimited traffic. R2 Standard storage is USD
-0.015/GB-month with free egress. Approximate totals are USD 6.04/month for
-100 GB or USD 8.29/month for 250 GB. Check current prices and plan availability
-before applying the configuration.
+0.015/GB-month with 10 GB-month included and free egress. Approximate
+VPS-plus-storage totals are USD 5.89/month for 100 GB or USD 8.14/month for
+250 GB; R2 operation charges can add to these estimates. Check current prices
+and plan availability before applying the configuration.
 
 ## Prerequisites
 
@@ -91,10 +92,11 @@ separate.
 
 ## Deploy the service
 
-Use a version tag or digest for `MISE_CACHE_IMAGE`; do not deploy `latest`:
+Pin `MISE_CACHE_IMAGE` by digest so a deployment cannot silently select changed
+image content:
 
 ```sh
-export MISE_CACHE_IMAGE=ghcr.io/jdx/mise-cache:0.1.0
+export MISE_CACHE_IMAGE=ghcr.io/jdx/mise-cache@sha256:<64-hex-digit-digest>
 export MISE_CACHE_DATABASE_PASSWORD="$(openssl rand -hex 24)"
 export R2_ACCESS_KEY_ID=...
 export R2_SECRET_ACCESS_KEY=...

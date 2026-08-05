@@ -65,7 +65,7 @@ chmod 0755 "$test_root/bin/fake-terraform" "$test_root/bin/mise"
 common_env=(
   "CAPTURE_DIR=$test_root/capture"
   "MISE_CACHE_DATABASE_PASSWORD=database_password_123456"
-  "MISE_CACHE_IMAGE=ghcr.io/jdx/mise-cache:0.1.0"
+  "MISE_CACHE_IMAGE=ghcr.io/jdx/mise-cache@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   "PATH=$test_root/bin:$PATH"
   "R2_ACCESS_KEY_ID=r2-access-key"
   "R2_SECRET_ACCESS_KEY=r2-secret-key"
@@ -75,6 +75,14 @@ common_env=(
 
 if env "${common_env[@]}" "$script_dir/deploy.sh" --dry-run >/dev/null 2>&1; then
   echo "deploy.sh accepted a missing OVH_SSH_SOURCE_CIDR" >&2
+  exit 1
+fi
+
+if env "${common_env[@]}" \
+  MISE_CACHE_IMAGE=ghcr.io/jdx/mise-cache:0.1.0 \
+  OVH_SSH_SOURCE_CIDR=203.0.113.10/32 \
+  "$script_dir/deploy.sh" --dry-run >/dev/null 2>&1; then
+  echo "deploy.sh accepted an image that was not pinned by digest" >&2
   exit 1
 fi
 

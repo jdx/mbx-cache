@@ -38,8 +38,8 @@ if [[ ! $MISE_CACHE_DATABASE_PASSWORD =~ ^[A-Za-z0-9_-]{24,}$ ]]; then
   echo "MISE_CACHE_DATABASE_PASSWORD must contain at least 24 URL-safe characters" >&2
   exit 1
 fi
-if [[ $MISE_CACHE_IMAGE == *:latest ]]; then
-  echo "MISE_CACHE_IMAGE must use an immutable version tag or digest, not latest" >&2
+if [[ ! $MISE_CACHE_IMAGE =~ ^.+@sha256:[a-fA-F0-9]{64}$ ]]; then
+  echo "MISE_CACHE_IMAGE must be pinned by sha256 digest" >&2
   exit 1
 fi
 if [[ $OVH_SSH_SOURCE_CIDR =~ [[:space:]] ]]; then
