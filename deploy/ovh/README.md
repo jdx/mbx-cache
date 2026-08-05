@@ -11,9 +11,11 @@ Terraform provisions:
 - an R2 Standard bucket with the `enam` location hint; and
 - a DNS-only Cloudflare record pointing at the VPS.
 
-Ansible installs and converges the host firewall, fail2ban, automatic security
-updates, Caddy, PostgreSQL, and mise-cache. Runtime secrets are deployed over
-SSH and do not enter Terraform state or OVH installation metadata.
+[`mise bootstrap remote`](https://mise.jdx.dev/bootstrap/remote.html) installs
+and converges the host firewall, fail2ban, automatic security updates, Docker,
+Caddy, PostgreSQL, and mise-cache. Runtime secrets are copied only through a
+protected temporary bootstrap project; they do not enter Terraform state, mise
+configuration, Git, or OVH installation metadata.
 
 ## Cost profile
 
@@ -26,7 +28,8 @@ before applying the configuration.
 ## Prerequisites
 
 - Terraform or OpenTofu 1.8 or newer
-- Ansible
+- mise 2026.8.2 or newer
+- local `curl`, `jq`, `ssh`, and `tar` commands
 - an OVH US account with a default payment method
 - OVH API credentials authorized to order and manage a VPS
 - a current OVH US VPS plan code and Ubuntu image ID
@@ -99,11 +102,43 @@ export OVH_SSH_SOURCE_CIDR="203.0.113.10/32"
 ./deploy/ovh/deploy.sh
 ```
 
+`OVH_SSH_SOURCE_CIDR` is required: there is no world-open default. Mise also
+checks the active SSH connection against this rule and `OVH_SSH_PORT` before
+atomically applying the nftables policy, so an incorrect CIDR or port fails
+before it can lock out the operator. The declared policy permits TCP 80/443,
+UDP 443 for HTTP/3, and SSH only from the supplied CIDR.
+
 The deploy script reads the hostname, server address, R2 endpoint, and bucket
-from Terraform outputs. Ubuntu images use the `ubuntu` SSH user by default;
-override `OVH_SSH_USER` if the selected image differs. Keep the database
-password in a password manager because changing it after PostgreSQL initializes
-requires a database role-password rotation.
+from Terraform outputs. It creates a mode-`0700` local bootstrap project,
+writes only the explicitly required runtime values into mode-`0600` source
+files, and runs `mise bootstrap remote`. Mise stages the project in another
+mode-`0700` temporary directory on the host, converges the protected service
+environment files, and removes the staging directory. A shell trap removes the
+local project on success or failure. The caller's other environment variables
+are never forwarded.
+
+Use [fnox](https://fnox.jdx.dev/) or another secret manager to populate the
+explicit deployment environment without storing values in shell history:
+
+```sh
+fnox exec -- ./deploy/ovh/deploy.sh
+```
+
+Ubuntu images use the `ubuntu` SSH user by default. Override `OVH_SSH_USER`,
+`OVH_SSH_PORT`, or `OVH_SSH_IDENTITY_FILE` when necessary; normal OpenSSH
+configuration and host-key policy still apply. Additional arguments are passed
+to `mise bootstrap remote`, so the complete remote plan can be inspected
+without changing the host:
+
+```sh
+./deploy/ovh/deploy.sh --dry-run
+```
+
+On apply, the wrapper updates package metadata, converges only the package,
+file, service, firewall, and Compose phases, then waits up to ten minutes for
+the public HTTPS status endpoint. Keep the database password in a password
+manager because changing it after PostgreSQL initializes requires a database
+role-password rotation.
 
 GitHub OIDC is configured with these server-enforced grants:
 
@@ -122,6 +157,11 @@ curl --fail "$(terraform -chdir=deploy/ovh/terraform output -raw cache_url)/v1/s
 ssh ubuntu@"$(terraform -chdir=deploy/ovh/terraform output -raw server_ipv4)" \
   'cd /opt/mise-cache && sudo docker compose ps'
 ```
+
+The desired host state lives in `deploy/ovh/bootstrap/mise.toml`. Re-running
+the deployment is convergent: mise skips matching packages and files, verifies
+service state and the atomic firewall fingerprint, and recreates Compose
+containers only when their effective configuration has changed.
 
 Prometheus metrics remain available to containers at `/metrics`, but Caddy
 does not expose that endpoint publicly. Add a private metrics collector before

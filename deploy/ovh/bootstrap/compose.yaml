@@ -1,8 +1,8 @@
 services:
   cache:
-    image: "{{ cache_image }}"
+    image: "${MISE_CACHE_IMAGE:?MISE_CACHE_IMAGE is required}"
     restart: unless-stopped
-    env_file: .env
+    env_file: cache.env
     depends_on:
       postgres:
         condition: service_healthy
@@ -16,7 +16,7 @@ services:
     environment:
       POSTGRES_DB: mise_cache
       POSTGRES_USER: mise_cache
-      POSTGRES_PASSWORD: "{{ database_password }}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mise_cache"]
       interval: 5s
@@ -29,13 +29,32 @@ services:
   caddy:
     image: caddy:2.10-alpine
     restart: unless-stopped
-    depends_on: [cache]
+    environment:
+      MISE_CACHE_DOMAIN: "${MISE_CACHE_DOMAIN:?MISE_CACHE_DOMAIN is required}"
+      CADDYFILE: |
+        {$$MISE_CACHE_DOMAIN} {
+            encode zstd gzip
+
+            @metrics path /metrics
+            respond @metrics 404
+
+            reverse_proxy cache:8080 {
+                health_uri /v1/status
+            }
+        }
+    command:
+      - sh
+      - -ec
+      - |
+        printf '%s\n' "$$CADDYFILE" >/tmp/Caddyfile
+        exec caddy run --config /tmp/Caddyfile --adapter caddyfile
+    depends_on:
+      - cache
     ports:
       - "80:80"
       - "443:443"
       - "443:443/udp"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     networks: [internal]

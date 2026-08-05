@@ -10,19 +10,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4.2.1
+        with:
+          version: 2026.8.2
+          install: false
+          cache: false
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.14.9
       - run: terraform -chdir=deploy/ovh/terraform fmt -check -recursive
       - run: terraform -chdir=deploy/ovh/terraform init -backend=false
       - run: terraform -chdir=deploy/ovh/terraform validate
-      - run: pipx install ansible-core==2.21.2
-      - run: ansible-playbook --syntax-check -i '127.0.0.1,' deploy/ovh/ansible/playbook.yml
-      - run: shellcheck deploy/ovh/deploy.sh
+      - name: Validate bootstrap plan
+        run: |
+          install -d -m 0700 deploy/ovh/bootstrap/runtime
+          install -m 0600 deploy/ovh/bootstrap/runtime.env.example deploy/ovh/bootstrap/runtime/.env
+          install -m 0600 deploy/ovh/bootstrap/cache.env.example deploy/ovh/bootstrap/runtime/cache.env
+          printf '%s\n' \
+            '[[bootstrap.linux.firewall.rules]]' \
+            'name = "ssh-admin"' \
+            'direction = "incoming"' \
+            'action = "allow"' \
+            'port = 22' \
+            'protocol = "tcp"' \
+            'source = "203.0.113.10/32"' \
+            >deploy/ovh/bootstrap/mise.local.toml
+          SSH_CONNECTION="203.0.113.10 54321 192.0.2.10 22" \
+            MISE_TRUSTED_CONFIG_PATHS="$PWD/deploy/ovh/bootstrap" \
+            mise --cd deploy/ovh/bootstrap bootstrap plan --json >/dev/null
+      - run: shellcheck deploy/ovh/deploy.sh deploy/ovh/test-deploy.sh
+      - run: deploy/ovh/test-deploy.sh
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: "rustfmt, clippy"

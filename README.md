@@ -143,8 +143,8 @@ Treat the output as a secret even though it is short-lived. Set the audience in 
 - `docker-compose.yml` runs a local development stack with PostgreSQL and MinIO.
 - `charts/mise-cache` runs a horizontally scalable Kubernetes deployment.
 - [`deploy/ovh`](deploy/ovh/README.md) provisions a low-cost US production
-  instance with Terraform and converges Caddy, PostgreSQL, and mise-cache with
-  Ansible. Cache blobs use Cloudflare R2.
+  instance with Terraform and converges its host with `mise bootstrap remote`.
+  Cache blobs use Cloudflare R2.
 
 ## API
 
