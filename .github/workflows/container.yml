@@ -5,16 +5,8 @@ on:
     paths:
       - .dockerignore
       - .github/workflows/container.yml
-      - Cargo.lock
-      - Cargo.toml
-      - Dockerfile
-      - migrations/**
-      - src/**
-  push:
-    branches: [main]
-    paths:
-      - .dockerignore
-      - .github/workflows/container.yml
+      - .github/workflows/release-plz.yml
+      - .github/workflows/release.yml
       - Cargo.lock
       - Cargo.toml
       - Dockerfile
