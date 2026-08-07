@@ -5,6 +5,7 @@ edition = "2024"
 license = "MIT"
 description = "Self-hosted remote task cache for mise"
 repository = "https://github.com/jdx/mise-cache"
+publish = false
 
 [dependencies]
 anyhow = "1"
