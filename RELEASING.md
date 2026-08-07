@@ -19,9 +19,11 @@ stored in GitHub.
 
 ## Normal release flow
 
-1. Every push to `main` publishes a multi-platform image tagged with the full
-   commit SHA (`sha-<commit>`) and moves `main` to that image. If builds overlap,
-   only the current head commit is allowed to move `main`.
+1. Every push to `main` builds AMD64 and ARM64 images on native GitHub-hosted
+   runners, combines them into a multi-platform image tagged with the full
+   commit SHA (`sha-<commit>`), and moves `main` to that image. Architecture-
+   specific caches keep subsequent builds fast. If builds overlap, only the
+   current head commit is allowed to move `main`.
 2. A push to `main` also opens or updates the release-plz release PR.
 3. The daily release job enables auto-merge when the previous release is at
    least seven days old and a `feat` or `fix` commit is pending. The first
