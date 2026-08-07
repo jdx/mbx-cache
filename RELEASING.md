@@ -1,8 +1,9 @@
 # Releasing mise-cache
 
 Releases are managed by release-plz. It derives versions from crates.io and
-updates `Cargo.toml` and `CHANGELOG.md` in a release PR. Merging that PR
-publishes the crate, Git tag, GitHub release, and container image.
+updates `Cargo.toml` and `CHANGELOG.md` in a release PR. Every commit on `main`
+publishes a container image. Merging a release PR additionally publishes the
+crate, Git tag, and GitHub release.
 
 ## Repository setup
 
@@ -18,15 +19,19 @@ stored in GitHub.
 
 ## Normal release flow
 
-1. A push to `main` opens or updates the release-plz release PR.
-2. The daily release job enables auto-merge when the previous release is at
+1. Every push to `main` publishes a multi-platform image tagged with the full
+   commit SHA (`sha-<commit>`) and moves `main` to that image. If builds overlap,
+   only the current head commit is allowed to move `main`.
+2. A push to `main` also opens or updates the release-plz release PR.
+3. The daily release job enables auto-merge when the previous release is at
    least seven days old and a `feat` or `fix` commit is pending. The first
    release is allowed immediately. Manually dispatch `auto-merge-release` to
    bypass the cadence checks.
-3. Merging the release PR publishes the crate to crates.io and creates a
+4. Merging the release PR publishes the crate to crates.io and creates a
    `vX.Y.Z` tag and draft GitHub release.
-4. The release workflow publishes the multi-platform image, uploads its
-   immutable reference as `container-image.txt`, and publishes the release.
+5. The same image build also adds the `X.Y.Z` and `X.Y` tags, uploads its
+   immutable digest reference as `container-image.txt`, and publishes the
+   release. A second container build is not run for the release.
 
 The image reference in `container-image.txt` is the value to use for
 `MISE_CACHE_IMAGE` in the OVH deployment.
@@ -35,4 +40,5 @@ The image reference in `container-image.txt` is the value to use for
 
 If image publishing fails after a tag exists, manually dispatch the `release`
 workflow with that tag. It rebuilds the image, replaces `container-image.txt`,
-and publishes the release only after the image succeeds.
+and publishes the release only after the image succeeds. Recovery does not move
+the `main` image tag.
