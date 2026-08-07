@@ -5,7 +5,18 @@ edition = "2024"
 license = "MIT"
 description = "Self-hosted remote task cache for mise"
 repository = "https://github.com/jdx/mise-cache"
-publish = false
+homepage = "https://github.com/jdx/mise-cache"
+readme = "README.md"
+keywords = ["mise", "cache", "build-cache", "remote-cache"]
+categories = ["command-line-utilities", "development-tools"]
+include = [
+  "/src/**",
+  "/migrations/**",
+  "/Cargo.toml",
+  "/Cargo.lock",
+  "/README.md",
+  "/LICENSE",
+]
 
 [dependencies]
 anyhow = "1"

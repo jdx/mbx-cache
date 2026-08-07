@@ -1,8 +1,8 @@
 # Releasing mise-cache
 
-Releases are managed by release-plz. It derives versions from Git tags, updates
-`Cargo.toml` and `CHANGELOG.md` in a release PR, and never publishes the service
-to crates.io.
+Releases are managed by release-plz. It derives versions from crates.io and
+updates `Cargo.toml` and `CHANGELOG.md` in a release PR. Merging that PR
+publishes the crate, Git tag, GitHub release, and container image.
 
 ## Repository setup
 
@@ -11,6 +11,11 @@ token for this repository with read/write access to contents and pull requests.
 A token distinct from `GITHUB_TOKEN` is required so release-plz's pull requests
 trigger the normal CI and review workflows.
 
+Configure a crates.io trusted publisher for owner `jdx`, repository
+`mise-cache`, and workflow `release-plz.yml`. The release job requests a
+short-lived crates.io token with GitHub OIDC; no long-lived crates.io token is
+stored in GitHub.
+
 ## Normal release flow
 
 1. A push to `main` opens or updates the release-plz release PR.
@@ -18,7 +23,8 @@ trigger the normal CI and review workflows.
    least seven days old and a `feat` or `fix` commit is pending. The first
    release is allowed immediately. Manually dispatch `auto-merge-release` to
    bypass the cadence checks.
-3. Merging the release PR creates a `vX.Y.Z` tag and draft GitHub release.
+3. Merging the release PR publishes the crate to crates.io and creates a
+   `vX.Y.Z` tag and draft GitHub release.
 4. The release workflow publishes the multi-platform image, uploads its
    immutable reference as `container-image.txt`, and publishes the release.
 
