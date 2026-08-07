@@ -68,6 +68,7 @@ jobs:
 
   release-pr:
     name: Release PR
+    needs: release
     if: github.repository == 'jdx/mise-cache'
     runs-on: ubuntu-latest
     permissions:

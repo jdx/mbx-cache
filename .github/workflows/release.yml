@@ -67,6 +67,14 @@ jobs:
           image="ghcr.io/jdx/mise-cache@$DIGEST"
           printf '%s\n' "$image" | tee container-image.txt
           printf '### Container image\n\n%s\n' "$image" >> "$GITHUB_STEP_SUMMARY"
+          if ! gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "${{ github.repository }}" \
+              --draft \
+              --generate-notes \
+              --title "$TAG" \
+              --verify-tag
+          fi
           gh release upload "$TAG" container-image.txt \
             --repo "${{ github.repository }}" \
             --clobber
