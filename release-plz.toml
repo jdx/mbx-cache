@@ -1,0 +1,5 @@
+[workspace]
+git_only = true
+release_always = false
+git_release_enable = true
+git_release_draft = true
