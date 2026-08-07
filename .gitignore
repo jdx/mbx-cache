@@ -2,4 +2,7 @@
 /.env
 *.pem
 *.key
-
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform/

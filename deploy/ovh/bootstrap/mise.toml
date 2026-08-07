@@ -1,0 +1,114 @@
+min_version = "2026.8.2"
+
+[bootstrap.packages]
+"apt:ca-certificates" = "latest"
+"apt:docker-compose-v2" = "latest"
+"apt:docker.io" = "latest"
+"apt:fail2ban" = "latest"
+"apt:nftables" = "latest"
+"apt:unattended-upgrades" = "latest"
+
+[bootstrap.directories."/opt/mise-cache"]
+owner = "root"
+group = "root"
+mode = "0750"
+
+[bootstrap.files."/etc/apt/apt.conf.d/20auto-upgrades"]
+content = '''
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+'''
+owner = "root"
+group = "root"
+mode = "0644"
+
+[bootstrap.files."/etc/fail2ban/jail.d/mise-cache.conf"]
+content = '''
+[sshd]
+enabled = true
+backend = systemd
+bantime = 1h
+findtime = 10m
+maxretry = 5
+'''
+owner = "root"
+group = "root"
+mode = "0644"
+notify = ["fail2ban"]
+
+[bootstrap.files."/opt/mise-cache/compose.yaml"]
+source = "./compose.yaml"
+owner = "root"
+group = "root"
+mode = "0644"
+
+[bootstrap.files."/opt/mise-cache/.env"]
+source = "./runtime/.env"
+owner = "root"
+group = "root"
+mode = "0600"
+
+[bootstrap.files."/opt/mise-cache/cache.env"]
+source = "./runtime/cache.env"
+owner = "root"
+group = "root"
+mode = "0600"
+
+[bootstrap.services.docker]
+state = "running"
+enabled = true
+
+[bootstrap.services.fail2ban]
+state = "running"
+enabled = true
+on_change = "restart"
+
+[bootstrap.services.unattended-upgrades]
+state = "running"
+enabled = true
+
+[bootstrap.linux.firewall]
+backend = "nftables"
+state = "enabled"
+default_incoming = "deny"
+default_outgoing = "allow"
+exclusive = true
+
+[[bootstrap.linux.firewall.rules]]
+name = "http"
+direction = "incoming"
+action = "allow"
+port = 80
+protocol = "tcp"
+
+[[bootstrap.linux.firewall.rules]]
+name = "https"
+direction = "incoming"
+action = "allow"
+port = 443
+protocol = "tcp"
+
+[[bootstrap.linux.firewall.rules]]
+name = "http3"
+direction = "incoming"
+action = "allow"
+port = 443
+protocol = "udp"
+
+[bootstrap.compose.mise-cache]
+project_dir = "/opt/mise-cache"
+files = ["compose.yaml"]
+env_files = [".env"]
+project_name = "mise-cache"
+state = "running"
+pull = "missing"
+wait = true
+wait_timeout = 600
+timeout = 120
+remove_orphans = true
+sudo = true
+depends_on = [
+  "package:apt:docker.io",
+  "package:apt:docker-compose-v2",
+  "service:docker",
+]
