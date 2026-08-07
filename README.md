@@ -15,6 +15,12 @@
 
 ## Quick start
 
+Install the service from crates.io:
+
+```sh
+cargo install mise-cache
+```
+
 The development stack starts the service, PostgreSQL, and MinIO:
 
 ```sh
