@@ -1,7 +1,7 @@
 mod memory;
 mod postgres;
 
-use crate::model::{ActionResultEnvelope, Digest};
+use crate::model::{ActionResult, Digest};
 use async_trait::async_trait;
 
 pub use memory::MemoryMetadata;
@@ -18,16 +18,12 @@ pub enum CommitOutcome {
 pub trait MetadataStore: Send + Sync {
     async fn blob_visible(&self, namespace: &str, digest: &Digest) -> anyhow::Result<bool>;
     async fn register_blob(&self, namespace: &str, digest: &Digest) -> anyhow::Result<()>;
-    async fn get(
-        &self,
-        namespace: &str,
-        action: &Digest,
-    ) -> anyhow::Result<Option<ActionResultEnvelope>>;
+    async fn get(&self, namespace: &str, action: &Digest) -> anyhow::Result<Option<ActionResult>>;
     async fn commit(
         &self,
         namespace: &str,
         action: &Digest,
-        result: &ActionResultEnvelope,
+        result: &ActionResult,
     ) -> anyhow::Result<CommitOutcome>;
 }
 

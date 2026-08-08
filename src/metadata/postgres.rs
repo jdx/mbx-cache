@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 
 use super::{CommitOutcome, MetadataStore};
-use crate::model::{ActionResultEnvelope, Digest};
+use crate::model::{ActionResult, Digest};
 
 pub struct PostgresMetadata {
     pool: PgPool,
@@ -31,11 +31,7 @@ impl MetadataStore for PostgresMetadata {
         Ok(())
     }
 
-    async fn get(
-        &self,
-        namespace: &str,
-        action: &Digest,
-    ) -> anyhow::Result<Option<ActionResultEnvelope>> {
+    async fn get(&self, namespace: &str, action: &Digest) -> anyhow::Result<Option<ActionResult>> {
         let row = sqlx::query("SELECT result FROM action_results WHERE namespace = $1 AND algorithm = $2 AND hash = $3 AND size = $4")
             .bind(namespace).bind(action.algorithm.to_string()).bind(&action.hash).bind(action.size as i64)
             .fetch_optional(&self.pool).await?;
@@ -47,7 +43,7 @@ impl MetadataStore for PostgresMetadata {
         &self,
         namespace: &str,
         action: &Digest,
-        result: &ActionResultEnvelope,
+        result: &ActionResult,
     ) -> anyhow::Result<CommitOutcome> {
         let encoded = serde_json::to_value(result)?;
         let inserted = sqlx::query("INSERT INTO action_results (namespace, algorithm, hash, size, result) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING")
