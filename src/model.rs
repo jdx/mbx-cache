@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::{collections::BTreeMap, fmt};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -52,14 +52,6 @@ impl Digest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ActionResultEnvelope {
-    pub result: ActionResult,
-    #[serde(default)]
-    pub signatures: Vec<Signature>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ActionResult {
     pub action: Digest,
     pub metadata: Option<Digest>,
@@ -67,12 +59,175 @@ pub struct ActionResult {
     pub version: u8,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Signature {
-    pub algorithm: String,
-    pub key_id: String,
-    pub signature: String,
+pub struct TaskAction {
+    pub version: u8,
+    pub kind: String,
+    pub task: String,
+    pub phase: TaskPhase,
+    pub run: Vec<TaskRunEntry>,
+    pub args: Vec<String>,
+    pub shell: Option<String>,
+    pub outputs: Vec<String>,
+    pub root: String,
+    pub source_hash: String,
+    #[serde(default)]
+    pub dependency_keys: Vec<String>,
+    pub environment: BTreeMap<String, Option<String>>,
+    #[serde(default)]
+    pub command_inputs: Vec<TaskCommandInput>,
+    pub vars: BTreeMap<String, String>,
+    pub tools: Vec<String>,
+    pub os: String,
+    pub arch: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskPhase {
+    Normal,
+    Post,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum TaskRunEntry {
+    Script(String),
+    Single(TaskRunSingle),
+    Group(TaskRunGroup),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskRunSingle {
+    pub task: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskRunGroup {
+    pub tasks: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskCommandInput {
+    pub command: String,
+    pub stdout_hash: String,
+    pub stderr_hash: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskMetadata {
+    pub version: u8,
+    pub kind: String,
+    pub task_identity: String,
+    pub roots: Vec<String>,
+    pub output: Vec<TaskOutput>,
+    pub restored_bytes: u64,
+    pub execution_duration_ns: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskOutput {
+    pub stream: TaskOutputStream,
+    pub line: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskOutputStream {
+    Stdout,
+    Stderr,
+}
+
+fn valid_string(value: &str) -> bool {
+    !value.contains('\0')
+}
+
+fn valid_strings(values: &[String]) -> bool {
+    values.iter().all(|value| valid_string(value))
+}
+
+fn valid_string_map(values: &BTreeMap<String, String>) -> bool {
+    values
+        .iter()
+        .all(|(key, value)| valid_string(key) && valid_string(value))
+}
+
+impl TaskAction {
+    pub fn validate(&self) -> bool {
+        self.version == 1
+            && self.kind == "task"
+            && valid_string(&self.task)
+            && matches!(self.phase, TaskPhase::Normal | TaskPhase::Post)
+            && self.run.iter().all(TaskRunEntry::validate)
+            && valid_strings(&self.args)
+            && self.shell.as_deref().is_none_or(valid_string)
+            && valid_strings(&self.outputs)
+            && valid_string(&self.root)
+            && valid_string(&self.source_hash)
+            && valid_strings(&self.dependency_keys)
+            && self
+                .environment
+                .iter()
+                .all(|(key, value)| valid_string(key) && value.as_deref().is_none_or(valid_string))
+            && self.command_inputs.iter().all(TaskCommandInput::validate)
+            && valid_string_map(&self.vars)
+            && valid_strings(&self.tools)
+            && valid_string(&self.os)
+            && valid_string(&self.arch)
+    }
+}
+
+impl TaskRunEntry {
+    fn validate(&self) -> bool {
+        match self {
+            Self::Script(script) => valid_string(script),
+            Self::Single(entry) => {
+                valid_string(&entry.task)
+                    && valid_strings(&entry.args)
+                    && valid_string_map(&entry.env)
+            }
+            Self::Group(entry) => valid_strings(&entry.tasks),
+        }
+    }
+}
+
+impl TaskCommandInput {
+    fn validate(&self) -> bool {
+        valid_string(&self.command)
+            && valid_string(&self.stdout_hash)
+            && valid_string(&self.stderr_hash)
+    }
+}
+
+impl TaskMetadata {
+    pub fn validate(&self) -> bool {
+        // Serde's u64 deserialization is the schema validation for these numeric fields.
+        let _ = (self.restored_bytes, self.execution_duration_ns);
+        self.version == 1
+            && self.kind == "task"
+            && valid_string(&self.task_identity)
+            && valid_strings(&self.roots)
+            && self.output.iter().all(TaskOutput::validate)
+    }
+}
+
+impl TaskOutput {
+    fn validate(&self) -> bool {
+        matches!(
+            self.stream,
+            TaskOutputStream::Stdout | TaskOutputStream::Stderr
+        ) && valid_string(&self.line)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

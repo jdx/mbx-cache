@@ -1,6 +1,6 @@
 # mise-cache
 
-`mise-cache` is the official self-hostable remote cache service for mise tasks. It implements version 1 of the mise content-addressed cache protocol with immutable blobs, atomic action-result commits, namespace isolation, and streaming transfers.
+`mise-cache` is the official self-hostable remote build-cache service for mise. It implements version 1 of the mise action-cache protocol with immutable blobs, atomic action-result commits, namespace isolation, typed action schemas, and streaming transfers.
 
 ## Features
 
@@ -10,6 +10,7 @@
 - In-memory metadata for development or PostgreSQL for durable, horizontally scalable deployments
 - Static and OIDC bearer authorization with per-namespace read/write grants
 - Recursive output-tree validation before an action result becomes visible
+- Typed action and client-metadata validation with kind negotiation
 - Batch missing-blob queries and Prometheus metrics
 - Docker Compose, Helm, and Terraform-managed OVH deployments
 
@@ -164,6 +165,8 @@ All cache requests send `Mise-Cache-Namespace` and, unless anonymous access is e
 - `GET /metrics`
 
 Blobs and action results are immutable. Repeating an identical write is idempotent; attempting to replace an existing action result returns `409 Conflict`. The server verifies uploaded content and all referenced blobs before publishing an action result.
+
+`GET /v1/capabilities` advertises the action kinds and exact schema versions accepted by the server. Action-result keys use BLAKE3. Version 1 currently accepts task action and metadata schema version 1; compiler and build-system kinds are added through capability negotiation as their schemas ship.
 
 ## Operations
 

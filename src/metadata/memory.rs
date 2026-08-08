@@ -5,7 +5,7 @@ use std::{
 };
 
 use super::{CommitOutcome, MetadataStore};
-use crate::model::{ActionResultEnvelope, Digest};
+use crate::model::{ActionResult, Digest};
 
 #[derive(Default)]
 pub struct MemoryMetadata {
@@ -31,11 +31,7 @@ impl MetadataStore for MemoryMetadata {
         Ok(())
     }
 
-    async fn get(
-        &self,
-        namespace: &str,
-        action: &Digest,
-    ) -> anyhow::Result<Option<ActionResultEnvelope>> {
+    async fn get(&self, namespace: &str, action: &Digest) -> anyhow::Result<Option<ActionResult>> {
         let entries = self.entries.read().expect("metadata lock poisoned");
         entries
             .get(&(namespace.to_owned(), action.clone()))
@@ -47,7 +43,7 @@ impl MetadataStore for MemoryMetadata {
         &self,
         namespace: &str,
         action: &Digest,
-        result: &ActionResultEnvelope,
+        result: &ActionResult,
     ) -> anyhow::Result<CommitOutcome> {
         let encoded = serde_json::to_vec(result)?;
         let mut entries = self.entries.write().expect("metadata lock poisoned");

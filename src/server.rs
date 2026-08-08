@@ -23,7 +23,7 @@ use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
 use crate::{
     auth::{Access, Authorizer},
     metadata::{CommitOutcome, MetadataStore},
-    model::{ActionResultEnvelope, Algorithm, Digest, Directory},
+    model::{ActionResult, Algorithm, Digest, Directory, TaskAction, TaskMetadata},
     storage::{BlobStore, PutOutcome},
 };
 
@@ -82,7 +82,8 @@ async fn capabilities(State(state): State<AppState>) -> impl IntoResponse {
         "protocol":{"major":1,"minor":0},
         "digest_algorithms":["blake3","sha256"],
         "compressors":["identity"],
-        "features":{"batch":true,"resumable_uploads":false,"delegated_transfers":false,"signed_results":[]},
+        "action_kinds":{"task":{"action_schema":1,"metadata_schema":1}},
+        "features":{"batch":true,"resumable_uploads":false,"delegated_transfers":false},
         "limits":{"max_batch_items":10000,"max_inline_blob_bytes":1048576,"max_blob_bytes":state.max_blob_bytes}
     }))
 }
@@ -228,9 +229,9 @@ async fn get_action_result(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(parts): Path<(String, String, u64)>,
-) -> Result<Json<ActionResultEnvelope>, ApiError> {
+) -> Result<Json<ActionResult>, ApiError> {
     let namespace = state.auth.authorize(&headers, Access::Read).await?;
-    let action = parse_digest(parts)?;
+    let action = parse_action_digest(parts)?;
     match state
         .metadata
         .get(&namespace, &action)
@@ -252,26 +253,26 @@ async fn put_action_result(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(parts): Path<(String, String, u64)>,
-    Json(envelope): Json<ActionResultEnvelope>,
+    Json(result): Json<ActionResult>,
 ) -> Result<StatusCode, ApiError> {
     let namespace = state.auth.authorize(&headers, Access::Write).await?;
     require_immutable_precondition(&headers)?;
-    let action = parse_digest(parts)?;
-    if envelope.result.version != 1 || envelope.result.action != action {
+    let action = parse_action_digest(parts)?;
+    if result.version != 1 || result.action != action {
         return Err(ApiError::bad_request(
             "action result does not match request",
         ));
     }
-    validate_canonical_object(&state, &namespace, &action, "action descriptor").await?;
-    if let Some(metadata) = &envelope.result.metadata {
-        validate_canonical_object(&state, &namespace, metadata, "metadata").await?;
+    let action_kind = validate_action_descriptor(&state, &namespace, &action).await?;
+    if let Some(metadata) = &result.metadata {
+        validate_client_metadata(&state, &namespace, metadata, action_kind).await?;
     }
-    if let Some(root) = &envelope.result.output_root {
+    if let Some(root) = &result.output_root {
         validate_tree(&state, &namespace, root).await?;
     }
     let outcome = state
         .metadata
-        .commit(&namespace, &action, &envelope)
+        .commit(&namespace, &action, &result)
         .await
         .map_err(ApiError::internal)?;
     state.metrics.action_commits.fetch_add(1, Ordering::Relaxed);
@@ -363,12 +364,129 @@ async fn validate_tree(state: &AppState, namespace: &str, root: &Digest) -> Resu
     Ok(())
 }
 
-async fn validate_canonical_object(
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActionKind {
+    Task,
+}
+
+async fn validate_action_descriptor(
+    state: &AppState,
+    namespace: &str,
+    digest: &Digest,
+) -> Result<ActionKind, ApiError> {
+    let value = read_canonical_object(state, namespace, digest, "action descriptor").await?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| ApiError::unprocessable("action descriptor must be a JSON object"))?;
+    let kind = object
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| ApiError::unprocessable("action descriptor kind is required"))?;
+    let version = object
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| ApiError::unprocessable("action descriptor version is required"))?;
+    if kind != "task" {
+        return Err(ApiError::unprocessable(format!(
+            "unsupported action kind {kind:?}"
+        )));
+    }
+    if version != 1 {
+        return Err(ApiError::unprocessable(format!(
+            "unsupported task action schema {version}"
+        )));
+    }
+    for field in [
+        "version",
+        "kind",
+        "task",
+        "phase",
+        "run",
+        "args",
+        "shell",
+        "outputs",
+        "root",
+        "source_hash",
+        "environment",
+        "vars",
+        "tools",
+        "os",
+        "arch",
+    ] {
+        if !object.contains_key(field) {
+            return Err(ApiError::unprocessable(format!(
+                "task action field {field:?} is required"
+            )));
+        }
+    }
+    let action = serde_json::from_value::<TaskAction>(value)
+        .map_err(|error| ApiError::unprocessable(format!("invalid task action: {error}")))?;
+    if !action.validate() {
+        return Err(ApiError::unprocessable("invalid task action values"));
+    }
+    Ok(ActionKind::Task)
+}
+
+async fn validate_client_metadata(
+    state: &AppState,
+    namespace: &str,
+    digest: &Digest,
+    action_kind: ActionKind,
+) -> Result<(), ApiError> {
+    let value = read_canonical_object(state, namespace, digest, "client metadata").await?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| ApiError::unprocessable("client metadata must be a JSON object"))?;
+    let kind = object
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| ApiError::unprocessable("client metadata kind is required"))?;
+    let version = object
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| ApiError::unprocessable("client metadata version is required"))?;
+    if kind != "task" || action_kind != ActionKind::Task {
+        return Err(ApiError::unprocessable(
+            "client metadata kind does not match action kind",
+        ));
+    }
+    if version != 1 {
+        return Err(ApiError::unprocessable(format!(
+            "unsupported task metadata schema {version}"
+        )));
+    }
+    let metadata: TaskMetadata = serde_json::from_value(value)
+        .map_err(|error| ApiError::unprocessable(format!("invalid task metadata: {error}")))?;
+    if !metadata.validate() {
+        return Err(ApiError::unprocessable("invalid task metadata values"));
+    }
+    for root in metadata.roots {
+        validate_task_root(&root)?;
+    }
+    Ok(())
+}
+
+fn validate_task_root(root: &str) -> Result<(), ApiError> {
+    if root.is_empty()
+        || root.starts_with('/')
+        || root.contains(['\\', '\0'])
+        || root
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        return Err(ApiError::unprocessable(
+            "task metadata root must be a safe relative path",
+        ));
+    }
+    Ok(())
+}
+
+async fn read_canonical_object(
     state: &AppState,
     namespace: &str,
     digest: &Digest,
     label: &str,
-) -> Result<(), ApiError> {
+) -> Result<serde_json::Value, ApiError> {
     validate_digest(digest)?;
     if digest.size > 16 * 1024 * 1024 {
         return Err(ApiError::unprocessable(format!("{label} is too large")));
@@ -398,7 +516,7 @@ async fn validate_canonical_object(
             "{label} is not canonical JSON"
         )));
     }
-    Ok(())
+    Ok(value)
 }
 
 fn validate_directory_entries(directory: &Directory) -> Result<(), ApiError> {
@@ -459,6 +577,14 @@ fn parse_digest((algorithm, hash, size): (String, String, u64)) -> Result<Digest
         size,
     };
     validate_digest(&digest)?;
+    Ok(digest)
+}
+
+fn parse_action_digest(parts: (String, String, u64)) -> Result<Digest, ApiError> {
+    let digest = parse_digest(parts)?;
+    if digest.algorithm != Algorithm::Blake3 {
+        return Err(ApiError::bad_request("action result keys must use blake3"));
+    }
     Ok(digest)
 }
 
@@ -593,6 +719,61 @@ mod tests {
         }
     }
 
+    fn canonical(value: serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(&value).unwrap()
+    }
+
+    fn task_action(version: u8) -> Vec<u8> {
+        canonical(serde_json::json!({
+            "arch":"x86_64",
+            "args":[],
+            "command_inputs":[],
+            "dependency_keys":[],
+            "environment":{},
+            "kind":"task",
+            "os":"linux",
+            "outputs":["target/debug/widget"],
+            "phase":"normal",
+            "root":".",
+            "run":["cargo build"],
+            "shell":null,
+            "source_hash":"blake3:source",
+            "task":"build",
+            "tools":["core:rust@1.92.0"],
+            "vars":{},
+            "version":version
+        }))
+    }
+
+    fn task_metadata(kind: &str, version: u8) -> Vec<u8> {
+        canonical(serde_json::json!({
+            "execution_duration_ns":1,
+            "kind":kind,
+            "output":[{"line":"built widget","stream":"stdout"}],
+            "restored_bytes":42,
+            "roots":["target/debug/widget"],
+            "task_identity":"build:.",
+            "version":version
+        }))
+    }
+
+    async fn upload_blob(app: &Router, bytes: &[u8]) -> Digest {
+        let digest = digest(bytes);
+        let uri = format!(
+            "/v1/blobs/{}/{}/{}",
+            digest.algorithm, digest.hash, digest.size
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(request("PUT", uri, Body::from(bytes.to_vec())))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CREATED
+        );
+        digest
+    }
+
     #[tokio::test]
     async fn streams_and_validates_blobs() {
         let (app, _directory) = test_app().await;
@@ -623,39 +804,20 @@ mod tests {
     #[tokio::test]
     async fn publishes_action_result_only_after_references_exist() {
         let (app, _directory) = test_app().await;
-        let action_bytes = br#"{"version":1}"#;
-        let action = digest(action_bytes);
-        let action_uri = format!(
-            "/v1/blobs/{}/{}/{}",
-            action.algorithm, action.hash, action.size
-        );
-        assert_eq!(
-            app.clone()
-                .oneshot(request(
-                    "PUT",
-                    action_uri,
-                    Body::from(action_bytes.as_slice())
-                ))
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::CREATED
-        );
+        let action = upload_blob(&app, &task_action(1)).await;
+        let metadata = upload_blob(&app, &task_metadata("task", 1)).await;
 
         let result_uri = format!(
             "/v1/action-results/{}/{}/{}",
             action.algorithm, action.hash, action.size
         );
-        let envelope = ActionResultEnvelope {
-            result: crate::model::ActionResult {
-                action,
-                metadata: None,
-                output_root: None,
-                version: 1,
-            },
-            signatures: Vec::new(),
+        let result = ActionResult {
+            action,
+            metadata: Some(metadata),
+            output_root: None,
+            version: 1,
         };
-        let body = serde_json::to_vec(&envelope).unwrap();
+        let body = serde_json::to_vec(&result).unwrap();
         assert_eq!(
             app.clone()
                 .oneshot(request("PUT", result_uri.clone(), Body::from(body)))
@@ -664,12 +826,107 @@ mod tests {
                 .status(),
             StatusCode::CREATED
         );
+        let response = app
+            .oneshot(request("GET", result_uri, Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["version"], 1);
+        assert!(body.get("result").is_none());
+        assert!(body.get("signatures").is_none());
+    }
+
+    #[tokio::test]
+    async fn advertises_task_action_schemas() {
+        let (app, _directory) = test_app().await;
+        let response = app
+            .oneshot(request("GET", "/v1/capabilities".into(), Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["action_kinds"]["task"]["action_schema"], 1);
+        assert_eq!(body["action_kinds"]["task"]["metadata_schema"], 1);
+        assert!(body["features"].get("signed_results").is_none());
+    }
+
+    #[tokio::test]
+    async fn rejects_unsupported_action_schema() {
+        let (app, _directory) = test_app().await;
+        let action = upload_blob(&app, &task_action(2)).await;
+        let result_uri = format!(
+            "/v1/action-results/{}/{}/{}",
+            action.algorithm, action.hash, action.size
+        );
+        let body = serde_json::to_vec(&ActionResult {
+            action,
+            metadata: None,
+            output_root: None,
+            version: 1,
+        })
+        .unwrap();
         assert_eq!(
-            app.oneshot(request("GET", result_uri, Body::empty()))
+            app.oneshot(request("PUT", result_uri, Body::from(body)))
                 .await
                 .unwrap()
                 .status(),
-            StatusCode::OK
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_metadata_kind_mismatch() {
+        let (app, _directory) = test_app().await;
+        let action = upload_blob(&app, &task_action(1)).await;
+        let metadata = upload_blob(&app, &task_metadata("rust", 1)).await;
+        let result_uri = format!(
+            "/v1/action-results/{}/{}/{}",
+            action.algorithm, action.hash, action.size
+        );
+        let body = serde_json::to_vec(&ActionResult {
+            action,
+            metadata: Some(metadata),
+            output_root: None,
+            version: 1,
+        })
+        .unwrap();
+        assert_eq!(
+            app.oneshot(request("PUT", result_uri, Body::from(body)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_sha256_action_keys() {
+        let (app, _directory) = test_app().await;
+        let action = task_action(1);
+        let hash = hex::encode(sha2::Sha256::digest(&action));
+        let result_uri = format!("/v1/action-results/sha256/{hash}/{}", action.len());
+        let body = serde_json::to_vec(&ActionResult {
+            action: Digest {
+                algorithm: Algorithm::Sha256,
+                hash,
+                size: action.len() as u64,
+            },
+            metadata: None,
+            output_root: None,
+            version: 1,
+        })
+        .unwrap();
+        assert_eq!(
+            app.oneshot(request("PUT", result_uri, Body::from(body)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
         );
     }
 }
