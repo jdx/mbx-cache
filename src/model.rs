@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -148,6 +151,42 @@ pub enum TaskOutputStream {
     Stderr,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RustcAction {
+    pub version: u8,
+    pub kind: String,
+    pub adapter_version: u8,
+    pub compiler: RustcCompiler,
+    pub arguments: Vec<String>,
+    pub environment: BTreeMap<String, Option<String>>,
+    pub inputs: Vec<RustcInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RustcCompiler {
+    pub toolchain: String,
+    pub rustc_version: String,
+    pub host: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RustcInput {
+    pub path: String,
+    pub digest: Digest,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RustcMetadata {
+    pub version: u8,
+    pub kind: String,
+    pub stdout: Digest,
+    pub stderr: Digest,
+}
+
 fn valid_string(value: &str) -> bool {
     !value.contains('\0')
 }
@@ -228,6 +267,72 @@ impl TaskOutput {
             TaskOutputStream::Stdout | TaskOutputStream::Stderr
         ) && valid_string(&self.line)
     }
+}
+
+impl RustcAction {
+    pub fn validate(&self) -> bool {
+        let mut input_paths = HashSet::new();
+        self.version == 1
+            && self.kind == "rustc"
+            && self.adapter_version > 0
+            && self.compiler.validate()
+            && valid_strings(&self.arguments)
+            && self.environment.iter().all(|(key, value)| {
+                !key.is_empty() && valid_string(key) && value.as_deref().is_none_or(valid_string)
+            })
+            && !self.inputs.is_empty()
+            && self
+                .inputs
+                .iter()
+                .all(|input| input.validate() && input_paths.insert(&input.path))
+    }
+}
+
+impl RustcCompiler {
+    fn validate(&self) -> bool {
+        [&self.toolchain, &self.rustc_version, &self.host]
+            .into_iter()
+            .all(|value| !value.is_empty() && valid_string(value))
+    }
+}
+
+impl RustcInput {
+    fn validate(&self) -> bool {
+        valid_normalized_path(&self.path) && self.digest.validate()
+    }
+}
+
+impl RustcMetadata {
+    pub fn validate(&self) -> bool {
+        self.version == 1
+            && self.kind == "rustc"
+            && self.stdout.validate()
+            && self.stderr.validate()
+    }
+}
+
+fn valid_normalized_path(path: &str) -> bool {
+    let Some((placeholder, suffix)) = path
+        .strip_prefix("${")
+        .and_then(|path| path.split_once('}'))
+    else {
+        return false;
+    };
+    if placeholder.is_empty()
+        || !placeholder
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return false;
+    }
+    suffix.is_empty()
+        || suffix.strip_prefix('/').is_some_and(|suffix| {
+            !suffix.is_empty()
+                && !suffix.contains(['\\', '\0'])
+                && suffix
+                    .split('/')
+                    .all(|component| !component.is_empty() && component != "." && component != "..")
+        })
 }
 
 #[derive(Debug, Serialize, Deserialize)]

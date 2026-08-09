@@ -23,7 +23,10 @@ use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
 use crate::{
     auth::{Access, Authorizer},
     metadata::{CommitOutcome, MetadataStore},
-    model::{ActionResult, Algorithm, Digest, Directory, TaskAction, TaskMetadata},
+    model::{
+        ActionResult, Algorithm, Digest, Directory, RustcAction, RustcMetadata, TaskAction,
+        TaskMetadata,
+    },
     storage::{BlobStore, PutOutcome},
 };
 
@@ -82,7 +85,10 @@ async fn capabilities(State(state): State<AppState>) -> impl IntoResponse {
         "protocol":{"major":1,"minor":0},
         "digest_algorithms":["blake3","sha256"],
         "compressors":["identity"],
-        "action_kinds":{"task":{"action_schema":1,"metadata_schema":1}},
+        "action_kinds":{
+            "rustc":{"action_schema":1,"metadata_schema":1},
+            "task":{"action_schema":1,"metadata_schema":1}
+        },
         "features":{"batch":true,"resumable_uploads":false,"delegated_transfers":false},
         "limits":{"max_batch_items":10000,"max_inline_blob_bytes":1048576,"max_blob_bytes":state.max_blob_bytes}
     }))
@@ -264,6 +270,7 @@ async fn put_action_result(
         ));
     }
     let action_kind = validate_action_descriptor(&state, &namespace, &action).await?;
+    validate_action_result_shape(&result, action_kind)?;
     if let Some(metadata) = &result.metadata {
         validate_client_metadata(&state, &namespace, metadata, action_kind).await?;
     }
@@ -366,7 +373,22 @@ async fn validate_tree(state: &AppState, namespace: &str, root: &Digest) -> Resu
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ActionKind {
+    Rustc,
     Task,
+}
+
+fn validate_action_result_shape(
+    result: &ActionResult,
+    action_kind: ActionKind,
+) -> Result<(), ApiError> {
+    if action_kind == ActionKind::Rustc
+        && (result.metadata.is_none() || result.output_root.is_none())
+    {
+        return Err(ApiError::unprocessable(
+            "rustc action results require metadata and an output root",
+        ));
+    }
+    Ok(())
 }
 
 async fn validate_action_descriptor(
@@ -381,21 +403,30 @@ async fn validate_action_descriptor(
     let kind = object
         .get("kind")
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| ApiError::unprocessable("action descriptor kind is required"))?;
+        .ok_or_else(|| ApiError::unprocessable("action descriptor kind is required"))?
+        .to_owned();
     let version = object
         .get("version")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| ApiError::unprocessable("action descriptor version is required"))?;
-    if kind != "task" {
-        return Err(ApiError::unprocessable(format!(
+    match kind.as_str() {
+        "task" => validate_task_action(value, version),
+        "rustc" => validate_rustc_action(value, version),
+        _ => Err(ApiError::unprocessable(format!(
             "unsupported action kind {kind:?}"
-        )));
+        ))),
     }
+}
+
+fn validate_task_action(value: serde_json::Value, version: u64) -> Result<ActionKind, ApiError> {
     if version != 1 {
         return Err(ApiError::unprocessable(format!(
             "unsupported task action schema {version}"
         )));
     }
+    let object = value
+        .as_object()
+        .expect("action descriptors are checked to be objects");
     for field in [
         "version",
         "kind",
@@ -427,6 +458,20 @@ async fn validate_action_descriptor(
     Ok(ActionKind::Task)
 }
 
+fn validate_rustc_action(value: serde_json::Value, version: u64) -> Result<ActionKind, ApiError> {
+    if version != 1 {
+        return Err(ApiError::unprocessable(format!(
+            "unsupported rustc action schema {version}"
+        )));
+    }
+    let action = serde_json::from_value::<RustcAction>(value)
+        .map_err(|error| ApiError::unprocessable(format!("invalid rustc action: {error}")))?;
+    if !action.validate() {
+        return Err(ApiError::unprocessable("invalid rustc action values"));
+    }
+    Ok(ActionKind::Rustc)
+}
+
 async fn validate_client_metadata(
     state: &AppState,
     namespace: &str,
@@ -445,11 +490,22 @@ async fn validate_client_metadata(
         .get("version")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| ApiError::unprocessable("client metadata version is required"))?;
-    if kind != "task" || action_kind != ActionKind::Task {
+    let expected_kind = match action_kind {
+        ActionKind::Rustc => "rustc",
+        ActionKind::Task => "task",
+    };
+    if kind != expected_kind {
         return Err(ApiError::unprocessable(
             "client metadata kind does not match action kind",
         ));
     }
+    match action_kind {
+        ActionKind::Task => validate_task_metadata(value, version),
+        ActionKind::Rustc => validate_rustc_metadata(state, namespace, value, version).await,
+    }
+}
+
+fn validate_task_metadata(value: serde_json::Value, version: u64) -> Result<(), ApiError> {
     if version != 1 {
         return Err(ApiError::unprocessable(format!(
             "unsupported task metadata schema {version}"
@@ -463,6 +519,27 @@ async fn validate_client_metadata(
     for root in metadata.roots {
         validate_task_root(&root)?;
     }
+    Ok(())
+}
+
+async fn validate_rustc_metadata(
+    state: &AppState,
+    namespace: &str,
+    value: serde_json::Value,
+    version: u64,
+) -> Result<(), ApiError> {
+    if version != 1 {
+        return Err(ApiError::unprocessable(format!(
+            "unsupported rustc metadata schema {version}"
+        )));
+    }
+    let metadata: RustcMetadata = serde_json::from_value(value)
+        .map_err(|error| ApiError::unprocessable(format!("invalid rustc metadata: {error}")))?;
+    if !metadata.validate() {
+        return Err(ApiError::unprocessable("invalid rustc metadata values"));
+    }
+    require_blob(state, namespace, &metadata.stdout, "rustc stdout blob").await?;
+    require_blob(state, namespace, &metadata.stderr, "rustc stderr blob").await?;
     Ok(())
 }
 
@@ -757,6 +834,50 @@ mod tests {
         }))
     }
 
+    fn rustc_action(input: &Digest, version: u8) -> Vec<u8> {
+        canonical(serde_json::json!({
+            "adapter_version":1,
+            "arguments":[
+                "--crate-name=widget",
+                "--crate-type=lib",
+                "--emit=metadata,link",
+                "--out-dir=${target}/debug/deps"
+            ],
+            "compiler":{
+                "host":"x86_64-unknown-linux-gnu",
+                "rustc_version":"1.97.1 (test)",
+                "toolchain":"core:rust@1.97.1"
+            },
+            "environment":{"CARGO_PKG_VERSION":"1.0.0"},
+            "inputs":[{"digest":input,"path":"${workspace}/src/lib.rs"}],
+            "kind":"rustc",
+            "version":version
+        }))
+    }
+
+    fn rustc_metadata(stdout: &Digest, stderr: &Digest, version: u8) -> Vec<u8> {
+        canonical(serde_json::json!({
+            "kind":"rustc",
+            "stderr":stderr,
+            "stdout":stdout,
+            "version":version
+        }))
+    }
+
+    fn output_directory(artifact: &Digest) -> Vec<u8> {
+        canonical(serde_json::json!({
+            "directories":[],
+            "files":[{
+                "digest":artifact,
+                "executable":false,
+                "mode":420,
+                "name":"libwidget.rlib"
+            }],
+            "symlinks":[],
+            "version":1
+        }))
+    }
+
     async fn upload_blob(app: &Router, bytes: &[u8]) -> Digest {
         let digest = digest(bytes);
         let uri = format!(
@@ -840,7 +961,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn advertises_task_action_schemas() {
+    async fn advertises_action_schemas() {
         let (app, _directory) = test_app().await;
         let response = app
             .oneshot(request("GET", "/v1/capabilities".into(), Body::empty()))
@@ -852,7 +973,205 @@ mod tests {
                 .unwrap();
         assert_eq!(body["action_kinds"]["task"]["action_schema"], 1);
         assert_eq!(body["action_kinds"]["task"]["metadata_schema"], 1);
+        assert_eq!(body["action_kinds"]["rustc"]["action_schema"], 1);
+        assert_eq!(body["action_kinds"]["rustc"]["metadata_schema"], 1);
         assert!(body["features"].get("signed_results").is_none());
+    }
+
+    #[tokio::test]
+    async fn publishes_rustc_results_with_artifacts_and_diagnostics() {
+        let (app, _directory) = test_app().await;
+        let source = digest(b"pub fn widget() {}\n");
+        let action = upload_blob(&app, &rustc_action(&source, 1)).await;
+        let stdout = upload_blob(&app, b"").await;
+        let stderr = upload_blob(&app, b"warning: cached diagnostic\n").await;
+        let metadata = upload_blob(&app, &rustc_metadata(&stdout, &stderr, 1)).await;
+        let artifact = upload_blob(&app, b"rlib artifact").await;
+        let output_root = upload_blob(&app, &output_directory(&artifact)).await;
+        let result_uri = format!(
+            "/v1/action-results/{}/{}/{}",
+            action.algorithm, action.hash, action.size
+        );
+        let body = serde_json::to_vec(&ActionResult {
+            action,
+            metadata: Some(metadata),
+            output_root: Some(output_root),
+            version: 1,
+        })
+        .unwrap();
+
+        assert_eq!(
+            app.oneshot(request("PUT", result_uri, Body::from(body)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CREATED
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_incomplete_rustc_results() {
+        let (app, _directory) = test_app().await;
+        let source = digest(b"pub fn widget() {}\n");
+        let action = upload_blob(&app, &rustc_action(&source, 1)).await;
+        let result_uri = format!(
+            "/v1/action-results/{}/{}/{}",
+            action.algorithm, action.hash, action.size
+        );
+        let body = serde_json::to_vec(&ActionResult {
+            action,
+            metadata: None,
+            output_root: None,
+            version: 1,
+        })
+        .unwrap();
+
+        assert_eq!(
+            app.oneshot(request("PUT", result_uri, Body::from(body)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_rustc_diagnostic_blobs() {
+        let (app, _directory) = test_app().await;
+        let source = digest(b"pub fn widget() {}\n");
+        let action = upload_blob(&app, &rustc_action(&source, 1)).await;
+        let stdout = upload_blob(&app, b"").await;
+        let missing_stderr = digest(b"missing diagnostic\n");
+        let metadata = upload_blob(&app, &rustc_metadata(&stdout, &missing_stderr, 1)).await;
+        let artifact = upload_blob(&app, b"rlib artifact").await;
+        let output_root = upload_blob(&app, &output_directory(&artifact)).await;
+        let result_uri = format!(
+            "/v1/action-results/{}/{}/{}",
+            action.algorithm, action.hash, action.size
+        );
+        let body = serde_json::to_vec(&ActionResult {
+            action,
+            metadata: Some(metadata),
+            output_root: Some(output_root),
+            version: 1,
+        })
+        .unwrap();
+
+        assert_eq!(
+            app.oneshot(request("PUT", result_uri, Body::from(body)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_rustc_action_inputs() {
+        let (app, _directory) = test_app().await;
+        let source = digest(b"pub fn widget() {}\n");
+        let mut action: serde_json::Value =
+            serde_json::from_slice(&rustc_action(&source, 1)).unwrap();
+        action["inputs"][0]["path"] = "../src/lib.rs".into();
+        let action = upload_blob(&app, &canonical(action)).await;
+        let result_uri = format!(
+            "/v1/action-results/{}/{}/{}",
+            action.algorithm, action.hash, action.size
+        );
+        let body = serde_json::to_vec(&ActionResult {
+            action,
+            metadata: None,
+            output_root: None,
+            version: 1,
+        })
+        .unwrap();
+
+        let response = app
+            .oneshot(request("PUT", result_uri, Body::from(body)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["error"], "invalid rustc action values");
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_rustc_action_fields() {
+        let (app, _directory) = test_app().await;
+        let source = digest(b"pub fn widget() {}\n");
+        let mut action: serde_json::Value =
+            serde_json::from_slice(&rustc_action(&source, 1)).unwrap();
+        action["unknown"] = true.into();
+        let action = upload_blob(&app, &canonical(action)).await;
+        let result_uri = format!(
+            "/v1/action-results/{}/{}/{}",
+            action.algorithm, action.hash, action.size
+        );
+        let body = serde_json::to_vec(&ActionResult {
+            action,
+            metadata: None,
+            output_root: None,
+            version: 1,
+        })
+        .unwrap();
+
+        let response = app
+            .oneshot(request("PUT", result_uri, Body::from(body)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("invalid rustc action:")
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_rustc_metadata_fields() {
+        let (app, _directory) = test_app().await;
+        let source = digest(b"pub fn widget() {}\n");
+        let action = upload_blob(&app, &rustc_action(&source, 1)).await;
+        let stdout = upload_blob(&app, b"").await;
+        let stderr = upload_blob(&app, b"warning\n").await;
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&rustc_metadata(&stdout, &stderr, 1)).unwrap();
+        metadata["unknown"] = true.into();
+        let metadata = upload_blob(&app, &canonical(metadata)).await;
+        let artifact = upload_blob(&app, b"rlib artifact").await;
+        let output_root = upload_blob(&app, &output_directory(&artifact)).await;
+        let result_uri = format!(
+            "/v1/action-results/{}/{}/{}",
+            action.algorithm, action.hash, action.size
+        );
+        let body = serde_json::to_vec(&ActionResult {
+            action,
+            metadata: Some(metadata),
+            output_root: Some(output_root),
+            version: 1,
+        })
+        .unwrap();
+
+        let response = app
+            .oneshot(request("PUT", result_uri, Body::from(body)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("invalid rustc metadata:")
+        );
     }
 
     #[tokio::test]
@@ -883,7 +1202,7 @@ mod tests {
     async fn rejects_metadata_kind_mismatch() {
         let (app, _directory) = test_app().await;
         let action = upload_blob(&app, &task_action(1)).await;
-        let metadata = upload_blob(&app, &task_metadata("rust", 1)).await;
+        let metadata = upload_blob(&app, &task_metadata("rustc", 1)).await;
         let result_uri = format!(
             "/v1/action-results/{}/{}/{}",
             action.algorithm, action.hash, action.size
