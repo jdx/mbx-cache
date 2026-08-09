@@ -979,8 +979,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publishes_rustc_results_with_artifacts_and_diagnostics() {
+    async fn publishes_rustc_results_without_uploading_source_inputs() {
         let (app, _directory) = test_app().await;
+        // Action input digests identify local source content; only result
+        // metadata, diagnostics, and output artifacts are CAS references.
         let source = digest(b"pub fn widget() {}\n");
         let action = upload_blob(&app, &rustc_action(&source, 1)).await;
         let stdout = upload_blob(&app, b"").await;

@@ -164,7 +164,7 @@ All cache requests send `Mise-Cache-Namespace` and, unless anonymous access is e
 - `GET|PUT /v1/action-results/{algorithm}/{hash}/{size}`
 - `GET /metrics`
 
-Blobs and action results are immutable. Repeating an identical write is idempotent; attempting to replace an existing action result returns `409 Conflict`. The server verifies uploaded content and all referenced blobs before publishing an action result.
+Blobs and action results are immutable. Repeating an identical write is idempotent; attempting to replace an existing action result returns `409 Conflict`. The server verifies uploaded content and every blob reachable from result metadata and output trees before publishing an action result. Content digests inside an action descriptor identify local inputs for key construction; they are not CAS references, and clients do not upload source inputs.
 
 `GET /v1/capabilities` advertises the action kinds and exact schema versions accepted by the server. Action-result keys use BLAKE3. Version 1 accepts task and rustc action and metadata schema version 1. Rustc results require an output directory tree plus metadata referencing raw stdout and stderr blobs so clients can replay compiler diagnostics byte-for-byte.
 

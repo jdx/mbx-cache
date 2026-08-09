@@ -175,6 +175,8 @@ pub struct RustcCompiler {
 #[serde(deny_unknown_fields)]
 pub struct RustcInput {
     pub path: String,
+    /// Identifies local input content for the action key. This is not a CAS
+    /// reference: compiler source inputs are never uploaded to the service.
     pub digest: Digest,
 }
 
