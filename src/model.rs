@@ -53,6 +53,79 @@ impl Digest {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskActionManifest {
+    pub predictions: Vec<TaskActionPrediction>,
+    pub task: String,
+    pub version: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskActionPrediction {
+    pub action: Digest,
+    pub adapter: String,
+    pub invocation: Digest,
+    pub payload: String,
+}
+
+#[derive(Serialize)]
+struct TaskActionManifestSelector<'a> {
+    kind: &'static str,
+    task: &'a str,
+    version: u8,
+}
+
+impl TaskActionManifest {
+    pub fn validate(&self) -> bool {
+        let mut invocations = HashSet::new();
+        self.version == 1
+            && valid_task_identity(&self.task)
+            && self.predictions.len() <= 16 * 1024
+            && self.predictions.iter().all(|prediction| {
+                prediction.validate() && invocations.insert(&prediction.invocation)
+            })
+    }
+
+    pub fn selector_digest(&self) -> Digest {
+        let selector = serde_json::to_vec(&TaskActionManifestSelector {
+            kind: "task_action_manifest",
+            task: &self.task,
+            version: 1,
+        })
+        .expect("manifest selector must serialize");
+        Digest {
+            algorithm: Algorithm::Blake3,
+            hash: blake3::hash(&selector).to_hex().to_string(),
+            size: selector.len() as u64,
+        }
+    }
+}
+
+impl TaskActionPrediction {
+    fn validate(&self) -> bool {
+        self.action.algorithm == Algorithm::Blake3
+            && self.action.validate()
+            && self.invocation.algorithm == Algorithm::Blake3
+            && self.invocation.validate()
+            && !self.adapter.is_empty()
+            && self
+                .adapter
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            && self.payload.len() <= 256 * 1024
+            && serde_json::from_str::<serde_json::Value>(&self.payload).is_ok()
+    }
+}
+
+fn valid_task_identity(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionResult {

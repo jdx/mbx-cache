@@ -22,10 +22,10 @@ use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
 
 use crate::{
     auth::{Access, Authorizer},
-    metadata::{CommitOutcome, MetadataStore},
+    metadata::{CommitOutcome, ManifestCommitOutcome, MetadataStore},
     model::{
         ActionResult, Algorithm, Digest, Directory, RustcAction, RustcMetadata, TaskAction,
-        TaskMetadata,
+        TaskActionManifest, TaskMetadata,
     },
     storage::{BlobStore, PutOutcome},
 };
@@ -70,6 +70,10 @@ pub fn router(state: AppState) -> Router {
             "/v1/action-results/{algorithm}/{hash}/{size}",
             get(get_action_result).put(put_action_result),
         )
+        .route(
+            "/v1/action-manifests/{algorithm}/{hash}/{size}",
+            get(get_action_manifest).put(put_action_manifest),
+        )
         .route("/metrics", get(metrics))
         .layer(RequestBodyLimitLayer::new(limit))
         .layer(TraceLayer::new_for_http())
@@ -89,7 +93,7 @@ async fn capabilities(State(state): State<AppState>) -> impl IntoResponse {
             "rustc":{"action_schema":1,"metadata_schema":1},
             "task":{"action_schema":1,"metadata_schema":1}
         },
-        "features":{"batch":true,"resumable_uploads":false,"delegated_transfers":false},
+        "features":{"action_manifests":true,"batch":true,"resumable_uploads":false,"delegated_transfers":false},
         "limits":{"max_batch_items":10000,"max_inline_blob_bytes":1048576,"max_blob_bytes":state.max_blob_bytes}
     }))
 }
@@ -290,6 +294,68 @@ async fn put_action_result(
             "an immutable action result already exists",
         )),
     }
+}
+
+async fn get_action_manifest(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(parts): Path<(String, String, u64)>,
+) -> Result<Response, ApiError> {
+    let namespace = state.auth.authorize(&headers, Access::Read).await?;
+    let key = parse_action_digest(parts)?;
+    let record = state
+        .metadata
+        .get_manifest(&namespace, &key)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("action manifest not found"))?;
+    let body = serde_json::to_vec(&record.manifest).map_err(ApiError::internal)?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            "application/vnd.mise.cache-task-action-manifest.v1+json",
+        )
+        .header(header::ETAG, quoted_etag(&record.etag))
+        .body(Body::from(body))
+        .map_err(ApiError::internal)
+}
+
+async fn put_action_manifest(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(parts): Path<(String, String, u64)>,
+    Json(manifest): Json<TaskActionManifest>,
+) -> Result<Response, ApiError> {
+    let namespace = state.auth.authorize(&headers, Access::Write).await?;
+    let key = parse_action_digest(parts)?;
+    if !manifest.validate() || manifest.selector_digest() != key {
+        return Err(ApiError::bad_request(
+            "action manifest does not match request",
+        ));
+    }
+    let expected_etag = manifest_precondition(&headers)?;
+    let bytes = serde_json::to_vec(&manifest).map_err(ApiError::internal)?;
+    let etag = blake3::hash(&bytes).to_hex().to_string();
+    let outcome = state
+        .metadata
+        .commit_manifest(&namespace, &key, expected_etag.as_deref(), &etag, &manifest)
+        .await
+        .map_err(ApiError::internal)?;
+    let status = match outcome {
+        ManifestCommitOutcome::Created => StatusCode::CREATED,
+        ManifestCommitOutcome::Updated => StatusCode::NO_CONTENT,
+        ManifestCommitOutcome::PreconditionFailed => {
+            return Err(ApiError::precondition(
+                "action manifest changed; read and merge it before retrying",
+            ));
+        }
+    };
+    Response::builder()
+        .status(status)
+        .header(header::ETAG, quoted_etag(&etag))
+        .body(Body::empty())
+        .map_err(ApiError::internal)
 }
 
 async fn require_blob(
@@ -685,6 +751,37 @@ fn require_immutable_precondition(headers: &HeaderMap) -> Result<(), ApiError> {
     }
 }
 
+fn manifest_precondition(headers: &HeaderMap) -> Result<Option<String>, ApiError> {
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        == Some("*")
+    {
+        return Ok(None);
+    }
+    let value = headers
+        .get(header::IF_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| {
+            ApiError::precondition_required("If-None-Match: * or If-Match is required")
+        })?;
+    let etag = value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .filter(|value| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .ok_or_else(|| ApiError::bad_request("If-Match must contain one strong BLAKE3 ETag"))?;
+    Ok(Some(etag.to_owned()))
+}
+
+fn quoted_etag(etag: &str) -> String {
+    format!("\"{etag}\"")
+}
+
 #[derive(Default)]
 struct Metrics {
     blob_hits: AtomicU64,
@@ -731,6 +828,9 @@ impl ApiError {
     }
     pub fn precondition(message: impl ToString) -> Self {
         Self::new(StatusCode::PRECONDITION_FAILED, message)
+    }
+    pub fn precondition_required(message: impl ToString) -> Self {
+        Self::new(StatusCode::PRECONDITION_REQUIRED, message)
     }
     pub fn upgrade_required() -> Self {
         Self {
@@ -878,6 +978,23 @@ mod tests {
         }))
     }
 
+    fn action_manifest(task: &str, actions: &[&[u8]]) -> TaskActionManifest {
+        TaskActionManifest {
+            predictions: actions
+                .iter()
+                .enumerate()
+                .map(|(index, action)| crate::model::TaskActionPrediction {
+                    action: digest(action),
+                    adapter: "rustc".into(),
+                    invocation: digest(format!("invocation-{index}").as_bytes()),
+                    payload: "{}".into(),
+                })
+                .collect(),
+            task: task.into(),
+            version: 1,
+        }
+    }
+
     async fn upload_blob(app: &Router, bytes: &[u8]) -> Digest {
         let digest = digest(bytes);
         let uri = format!(
@@ -976,6 +1093,71 @@ mod tests {
         assert_eq!(body["action_kinds"]["rustc"]["action_schema"], 1);
         assert_eq!(body["action_kinds"]["rustc"]["metadata_schema"], 1);
         assert!(body["features"].get("signed_results").is_none());
+    }
+
+    #[tokio::test]
+    async fn action_manifests_use_optimistic_concurrency() {
+        let (app, _directory) = test_app().await;
+        let task = "a".repeat(64);
+        let first = action_manifest(&task, &[b"first action"]);
+        let key = first.selector_digest();
+        let uri = format!(
+            "/v1/action-manifests/{}/{}/{}",
+            key.algorithm, key.hash, key.size
+        );
+        let response = app
+            .clone()
+            .oneshot(request(
+                "PUT",
+                uri.clone(),
+                Body::from(serde_json::to_vec(&first).unwrap()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let first_etag = response.headers()[header::ETAG].clone();
+
+        let response = app
+            .clone()
+            .oneshot(request("GET", uri.clone(), Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::ETAG], first_etag);
+
+        let second = action_manifest(&task, &[b"first action", b"second action"]);
+        let mut update = request(
+            "PUT",
+            uri.clone(),
+            Body::from(serde_json::to_vec(&second).unwrap()),
+        );
+        update.headers_mut().remove(header::IF_NONE_MATCH);
+        update
+            .headers_mut()
+            .insert(header::IF_MATCH, first_etag.clone());
+        let response = app.clone().oneshot(update).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let mut stale = request(
+            "PUT",
+            uri.clone(),
+            Body::from(serde_json::to_vec(&first).unwrap()),
+        );
+        stale.headers_mut().remove(header::IF_NONE_MATCH);
+        stale.headers_mut().insert(header::IF_MATCH, first_etag);
+        assert_eq!(
+            app.clone().oneshot(stale).await.unwrap().status(),
+            StatusCode::PRECONDITION_FAILED
+        );
+
+        let response = app
+            .oneshot(request("GET", uri, Body::empty()))
+            .await
+            .unwrap();
+        let stored: TaskActionManifest =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(stored, second);
     }
 
     #[tokio::test]
