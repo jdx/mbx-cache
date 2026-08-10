@@ -4,6 +4,8 @@ use sqlx::{PgPool, Row};
 use super::{CommitOutcome, ManifestCommitOutcome, ManifestRecord, MetadataStore};
 use crate::model::{ActionResult, Digest, TaskActionManifest};
 
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
+
 pub struct PostgresMetadata {
     pool: PgPool,
 }
@@ -11,7 +13,7 @@ pub struct PostgresMetadata {
 impl PostgresMetadata {
     pub async fn connect(url: &str) -> anyhow::Result<Self> {
         let pool = PgPool::connect(url).await?;
-        sqlx::migrate!().run(&pool).await?;
+        MIGRATOR.run(&pool).await?;
         Ok(Self { pool })
     }
 }
@@ -107,5 +109,24 @@ impl MetadataStore for PostgresMetadata {
         } else {
             ManifestCommitOutcome::Created
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::MIGRATOR;
+
+    #[test]
+    fn embedded_migration_versions_are_unique() {
+        let mut versions = BTreeSet::new();
+        for migration in MIGRATOR.iter() {
+            assert!(
+                versions.insert(migration.version),
+                "migration version {} is duplicated",
+                migration.version
+            );
+        }
     }
 }
