@@ -4,13 +4,14 @@ use std::{
     sync::RwLock,
 };
 
-use super::{CommitOutcome, MetadataStore};
-use crate::model::{ActionResult, Digest};
+use super::{CommitOutcome, ManifestCommitOutcome, ManifestRecord, MetadataStore};
+use crate::model::{ActionResult, Digest, TaskActionManifest};
 
 #[derive(Default)]
 pub struct MemoryMetadata {
     entries: RwLock<HashMap<(String, Digest), Vec<u8>>>,
     blobs: RwLock<HashSet<(String, Digest)>>,
+    manifests: RwLock<HashMap<(String, Digest), (String, TaskActionManifest)>>,
 }
 
 #[async_trait]
@@ -55,5 +56,51 @@ impl MetadataStore for MemoryMetadata {
             Some(existing) if *existing == encoded => Ok(CommitOutcome::AlreadyExists),
             Some(_) => Ok(CommitOutcome::Conflict),
         }
+    }
+
+    async fn get_manifest(
+        &self,
+        namespace: &str,
+        key: &Digest,
+    ) -> anyhow::Result<Option<ManifestRecord>> {
+        Ok(self
+            .manifests
+            .read()
+            .expect("metadata lock poisoned")
+            .get(&(namespace.to_owned(), key.clone()))
+            .map(|(etag, manifest)| ManifestRecord {
+                etag: etag.clone(),
+                manifest: manifest.clone(),
+            }))
+    }
+
+    async fn commit_manifest(
+        &self,
+        namespace: &str,
+        key: &Digest,
+        expected_etag: Option<&str>,
+        etag: &str,
+        manifest: &TaskActionManifest,
+    ) -> anyhow::Result<ManifestCommitOutcome> {
+        let mut manifests = self.manifests.write().expect("metadata lock poisoned");
+        let entry = manifests.get(&(namespace.to_owned(), key.clone()));
+        let matches = match (entry, expected_etag) {
+            (None, None) => true,
+            (Some((current, _)), Some(expected)) => current == expected,
+            _ => false,
+        };
+        if !matches {
+            return Ok(ManifestCommitOutcome::PreconditionFailed);
+        }
+        let outcome = if entry.is_some() {
+            ManifestCommitOutcome::Updated
+        } else {
+            ManifestCommitOutcome::Created
+        };
+        manifests.insert(
+            (namespace.to_owned(), key.clone()),
+            (etag.to_owned(), manifest.clone()),
+        );
+        Ok(outcome)
     }
 }

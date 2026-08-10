@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 
-use super::{CommitOutcome, MetadataStore};
-use crate::model::{ActionResult, Digest};
+use super::{CommitOutcome, ManifestCommitOutcome, ManifestRecord, MetadataStore};
+use crate::model::{ActionResult, Digest, TaskActionManifest};
 
 pub struct PostgresMetadata {
     pool: PgPool,
@@ -61,5 +61,51 @@ impl MetadataStore for PostgresMetadata {
         } else {
             Ok(CommitOutcome::Conflict)
         }
+    }
+
+    async fn get_manifest(
+        &self,
+        namespace: &str,
+        key: &Digest,
+    ) -> anyhow::Result<Option<ManifestRecord>> {
+        let row = sqlx::query("SELECT etag, manifest FROM action_manifests WHERE namespace = $1 AND algorithm = $2 AND hash = $3 AND size = $4")
+            .bind(namespace).bind(key.algorithm.to_string()).bind(&key.hash).bind(key.size as i64)
+            .fetch_optional(&self.pool).await?;
+        row.map(|row| {
+            Ok(ManifestRecord {
+                etag: row.get("etag"),
+                manifest: serde_json::from_value(row.get("manifest"))?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn commit_manifest(
+        &self,
+        namespace: &str,
+        key: &Digest,
+        expected_etag: Option<&str>,
+        etag: &str,
+        manifest: &TaskActionManifest,
+    ) -> anyhow::Result<ManifestCommitOutcome> {
+        let manifest = serde_json::to_value(manifest)?;
+        let rows = if let Some(expected_etag) = expected_etag {
+            sqlx::query("UPDATE action_manifests SET etag = $5, manifest = $6, updated_at = now() WHERE namespace = $1 AND algorithm = $2 AND hash = $3 AND size = $4 AND etag = $7")
+                .bind(namespace).bind(key.algorithm.to_string()).bind(&key.hash).bind(key.size as i64)
+                .bind(etag).bind(&manifest).bind(expected_etag)
+                .execute(&self.pool).await?.rows_affected()
+        } else {
+            sqlx::query("INSERT INTO action_manifests (namespace, algorithm, hash, size, etag, manifest) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING")
+                .bind(namespace).bind(key.algorithm.to_string()).bind(&key.hash).bind(key.size as i64)
+                .bind(etag).bind(&manifest)
+                .execute(&self.pool).await?.rows_affected()
+        };
+        Ok(if rows == 0 {
+            ManifestCommitOutcome::PreconditionFailed
+        } else if expected_etag.is_some() {
+            ManifestCommitOutcome::Updated
+        } else {
+            ManifestCommitOutcome::Created
+        })
     }
 }

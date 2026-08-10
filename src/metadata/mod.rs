@@ -1,7 +1,7 @@
 mod memory;
 mod postgres;
 
-use crate::model::{ActionResult, Digest};
+use crate::model::{ActionResult, Digest, TaskActionManifest};
 use async_trait::async_trait;
 
 pub use memory::MemoryMetadata;
@@ -12,6 +12,18 @@ pub enum CommitOutcome {
     Created,
     AlreadyExists,
     Conflict,
+}
+
+pub struct ManifestRecord {
+    pub etag: String,
+    pub manifest: TaskActionManifest,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ManifestCommitOutcome {
+    Created,
+    Updated,
+    PreconditionFailed,
 }
 
 #[async_trait]
@@ -25,6 +37,19 @@ pub trait MetadataStore: Send + Sync {
         action: &Digest,
         result: &ActionResult,
     ) -> anyhow::Result<CommitOutcome>;
+    async fn get_manifest(
+        &self,
+        namespace: &str,
+        key: &Digest,
+    ) -> anyhow::Result<Option<ManifestRecord>>;
+    async fn commit_manifest(
+        &self,
+        namespace: &str,
+        key: &Digest,
+        expected_etag: Option<&str>,
+        etag: &str,
+        manifest: &TaskActionManifest,
+    ) -> anyhow::Result<ManifestCommitOutcome>;
 }
 
 pub async fn from_url(url: &str) -> anyhow::Result<std::sync::Arc<dyn MetadataStore>> {
