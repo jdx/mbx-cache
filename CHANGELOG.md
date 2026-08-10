@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/jdx/mise-cache/compare/v0.1.0...v0.1.1) - 2026-08-10
+
+### Added
+
+- *(protocol)* add mutable action manifests ([#14](https://github.com/jdx/mise-cache/pull/14))
+- *(protocol)* add rustc action contract ([#12](https://github.com/jdx/mise-cache/pull/12))
+
+### Fixed
+
+- *(database)* use unique action manifest migration version ([#18](https://github.com/jdx/mise-cache/pull/18))
+- *(protocol)* align action cache v1 contract ([#10](https://github.com/jdx/mise-cache/pull/10))
+
 ## [0.1.0](https://github.com/jdx/mise-cache/releases/tag/v0.1.0) - 2026-08-07
 
 ### Added
