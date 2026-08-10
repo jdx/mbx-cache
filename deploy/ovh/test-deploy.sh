@@ -55,14 +55,46 @@ grep -Fq 'AWS_ACCESS_KEY_ID="r2-access-key"' "$project_dir/runtime/cache.env"
 grep -Fq 'AWS_SECRET_ACCESS_KEY="r2-secret-key"' "$project_dir/runtime/cache.env"
 oidc_json=$(sed -n 's/^MISE_CACHE_OIDC_PROVIDERS_JSON=//p' "$project_dir/runtime/cache.env" | jq -c fromjson)
 jq -e '
-  .[0].rules | any(
+  .[0].rules as $rules |
+  ($rules | length == 9) and
+  (["jdx/mise", "jdx/aube"] | all(. as $repository |
+    ($rules | any(
+      .claims.repository == $repository and
+      .claims.repository_owner_id == "216188" and
+      .claims.ref == "refs/heads/main" and
+      .read == [$repository] and
+      .write == [$repository]
+    )) and
+    ($rules | any(
+      .claims.repository == $repository and
+      .claims.repository_owner_id == "216188" and
+      .claims.ref_type == "tag" and
+      .read == [$repository] and
+      .write == []
+    )) and
+    ($rules | any(
+      .claims.repository == $repository and
+      .claims.repository_owner_id == "216188" and
+      .claims.event_name == "pull_request" and
+      .read == [$repository] and
+      .write == []
+    )) and
+    ($rules | any(
+      .claims.repository == $repository and
+      .claims.repository_owner_id == "216188" and
+      .claims.event_name == "push" and
+      .read == [$repository] and
+      .write == []
+    ))
+  )) and
+  ($rules | any(
     .claims.repository == "jdx/mise-cache" and
     .claims.repository_owner_id == "216188" and
     .claims.environment == "production" and
     .claims.workflow_ref == "jdx/mise-cache/.github/workflows/release-plz.yml@refs/heads/main" and
     .read == ["jdx/mise-cache"] and
     .write == ["jdx/mise-cache"]
-  )
+  ))
 ' <<<"$oidc_json" >/dev/null
 grep -Fq 'port = 2222' "$project_dir/mise.local.toml"
 grep -Fq 'source = "203.0.113.10/32"' "$project_dir/mise.local.toml"
@@ -95,6 +127,16 @@ if env "${common_env[@]}" \
   OVH_SSH_SOURCE_CIDR=203.0.113.10/32 \
   "$script_dir/deploy.sh" --dry-run >/dev/null 2>&1; then
   echo "deploy.sh accepted an image that was not pinned by digest" >&2
+  exit 1
+fi
+
+invalid_repositories="$test_root/invalid-repositories.json"
+printf '%s\n' '[{"repository":"jdx/mise","repository_owner_id":"216188"},{"repository":"jdx/mise","repository_owner_id":"216188"}]' >"$invalid_repositories"
+if env "${common_env[@]}" \
+  MISE_CACHE_GITHUB_REPOSITORIES_FILE="$invalid_repositories" \
+  OVH_SSH_SOURCE_CIDR=203.0.113.10/32 \
+  "$script_dir/deploy.sh" --dry-run >/dev/null 2>&1; then
+  echo "deploy.sh accepted duplicate trusted repositories" >&2
   exit 1
 fi
 

@@ -47,23 +47,39 @@ if [[ $OVH_SSH_SOURCE_CIDR =~ [[:space:]] ]]; then
   exit 1
 fi
 
-github_repository=${MISE_CACHE_GITHUB_REPOSITORY:-jdx/mise}
-github_owner_id=${MISE_CACHE_GITHUB_OWNER_ID:-216188}
+trusted_repositories_file=${MISE_CACHE_GITHUB_REPOSITORIES_FILE:-$script_dir/trusted-repositories.json}
 deployment_repository=${MISE_CACHE_DEPLOY_GITHUB_REPOSITORY:-jdx/mise-cache}
+deployment_owner_id=${MISE_CACHE_DEPLOY_GITHUB_OWNER_ID:-216188}
 deployment_workflow_ref=${MISE_CACHE_DEPLOY_GITHUB_WORKFLOW_REF:-jdx/mise-cache/.github/workflows/release-plz.yml@refs/heads/main}
 ssh_user=${OVH_SSH_USER:-ubuntu}
 ssh_port=${OVH_SSH_PORT:-22}
 
-if [[ ! $github_repository =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-  echo "MISE_CACHE_GITHUB_REPOSITORY must be an owner/repository name" >&2
+if [[ ! -r $trusted_repositories_file ]]; then
+  echo "MISE_CACHE_GITHUB_REPOSITORIES_FILE is not readable: $trusted_repositories_file" >&2
   exit 1
 fi
-if [[ ! $github_owner_id =~ ^[0-9]+$ ]]; then
-  echo "MISE_CACHE_GITHUB_OWNER_ID must be numeric" >&2
+if ! trusted_repositories=$(jq -ce '
+  if type != "array" or length == 0 then
+    error("must be a non-empty array")
+  elif any(.[].repository; type != "string" or test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$") | not) then
+    error("repository must be an owner/repository name")
+  elif any(.[].repository_owner_id; type != "string" or test("^[0-9]+$") | not) then
+    error("repository_owner_id must be a numeric string")
+  elif ([.[].repository] | unique | length) != length then
+    error("repository names must be unique")
+  else
+    map({repository, repository_owner_id})
+  end
+' "$trusted_repositories_file"); then
+  echo "MISE_CACHE_GITHUB_REPOSITORIES_FILE is invalid: $trusted_repositories_file" >&2
   exit 1
 fi
 if [[ ! $deployment_repository =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   echo "MISE_CACHE_DEPLOY_GITHUB_REPOSITORY must be an owner/repository name" >&2
+  exit 1
+fi
+if [[ ! $deployment_owner_id =~ ^[0-9]+$ ]]; then
+  echo "MISE_CACHE_DEPLOY_GITHUB_OWNER_ID must be numeric" >&2
   exit 1
 fi
 if [[ ! $deployment_workflow_ref =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[.]github/workflows/[A-Za-z0-9_.-]+[.]ya?ml@refs/heads/[A-Za-z0-9_./-]+$ ]]; then
@@ -112,19 +128,24 @@ fi
 oidc_providers=$(jq -cn \
   --arg audience "$cache_url" \
   --arg deployment_repository "$deployment_repository" \
+  --arg deployment_owner_id "$deployment_owner_id" \
   --arg deployment_workflow_ref "$deployment_workflow_ref" \
-  --arg owner_id "$github_owner_id" \
-  --arg repository "$github_repository" \
+  --argjson repositories "$trusted_repositories" \
   '[{
     issuer: "https://token.actions.githubusercontent.com",
     audiences: [$audience],
-    rules: [
-      {claims: {repository: $repository, repository_owner_id: $owner_id, ref: "refs/heads/main"}, read: [$repository], write: [$repository]},
-      {claims: {repository: $repository, repository_owner_id: $owner_id, ref_type: "tag"}, read: [$repository], write: [$repository]},
-      {claims: {repository: $repository, repository_owner_id: $owner_id, event_name: "pull_request"}, read: [$repository], write: []},
-      {claims: {repository: $repository, repository_owner_id: $owner_id, event_name: "push"}, read: [$repository], write: []},
-      {claims: {repository: $deployment_repository, repository_owner_id: $owner_id, environment: "production", workflow_ref: $deployment_workflow_ref}, read: [$deployment_repository], write: [$deployment_repository]}
-    ]
+    rules: (
+      (
+        [$repositories[] as $entry | [
+          {claims: {repository: $entry.repository, repository_owner_id: $entry.repository_owner_id, ref: "refs/heads/main"}, read: [$entry.repository], write: [$entry.repository]},
+          {claims: {repository: $entry.repository, repository_owner_id: $entry.repository_owner_id, ref_type: "tag"}, read: [$entry.repository], write: []},
+          {claims: {repository: $entry.repository, repository_owner_id: $entry.repository_owner_id, event_name: "pull_request"}, read: [$entry.repository], write: []},
+          {claims: {repository: $entry.repository, repository_owner_id: $entry.repository_owner_id, event_name: "push"}, read: [$entry.repository], write: []}
+        ]] | add
+      ) + [
+        {claims: {repository: $deployment_repository, repository_owner_id: $deployment_owner_id, environment: "production", workflow_ref: $deployment_workflow_ref}, read: [$deployment_repository], write: [$deployment_repository]}
+      ]
+    )
   }]')
 
 temporary_root=${TMPDIR:-/tmp}
