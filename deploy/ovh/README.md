@@ -175,18 +175,22 @@ role-password rotation.
 
 GitHub OIDC is configured with these server-enforced grants:
 
-- `jdx/mise` on `main`: read/write;
-- `jdx/mise` tag workflows: read/write;
-- pull-request workflows: read-only; and
-- other push workflows: read-only; and
+- repositories listed in `trusted-repositories.json` on `main`: read/write;
+- tag workflows for listed repositories: read-only;
+- pull-request workflows for listed repositories: read-only;
+- other push workflows for listed repositories: read-only; and
 - the exact `jdx/mise-cache` production deployment workflow: read/write for
   its isolated qualification namespace.
 
-Override `MISE_CACHE_GITHUB_REPOSITORY` and `MISE_CACHE_GITHUB_OWNER_ID` when
-deploying for another repository owner. Override
+Each trusted repository is paired with GitHub's stable numeric
+`repository_owner_id`; repository names must be unique. Edit the checked-in
+file to change the production allowlist, or set
+`MISE_CACHE_GITHUB_REPOSITORIES_FILE` to a different JSON file for another
+installation. Override
 `MISE_CACHE_DEPLOY_GITHUB_REPOSITORY` and
+`MISE_CACHE_DEPLOY_GITHUB_OWNER_ID`, and
 `MISE_CACHE_DEPLOY_GITHUB_WORKFLOW_REF` together when deployment is managed by
-another repository or workflow.
+another repository owner or workflow.
 
 ## Verify and operate
 
