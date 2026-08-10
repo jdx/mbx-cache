@@ -74,10 +74,16 @@ if [[ -n ${OVH_SSH_IDENTITY_FILE:-} && ! -r $OVH_SSH_IDENTITY_FILE ]]; then
 fi
 
 server_ip="$("$terraform_command" -chdir="$terraform_dir" output -raw server_ipv4)"
+ssh_host=${OVH_SSH_HOST:-$server_ip}
 cache_url="$("$terraform_command" -chdir="$terraform_dir" output -raw cache_url)"
 r2_bucket="$("$terraform_command" -chdir="$terraform_dir" output -raw r2_bucket)"
 r2_endpoint="$("$terraform_command" -chdir="$terraform_dir" output -raw r2_endpoint)"
 cache_url=${cache_url%/}
+
+if [[ ! $ssh_host =~ ^[A-Za-z0-9_.:-]+$ ]]; then
+  echo "OVH_SSH_HOST must be an IP address or SSH host name without whitespace" >&2
+  exit 1
+fi
 
 if [[ $cache_url != https://* ]]; then
   echo "Terraform cache_url must use https://" >&2
@@ -166,7 +172,7 @@ ssh_source_cidr=$(jq -Rn --arg value "$OVH_SSH_SOURCE_CIDR" '$value')
 
 remote_args=(
   bootstrap remote
-  --host "$ssh_user@$server_ip"
+  --host "$ssh_user@$ssh_host"
   --source "$project_dir"
   --only "packages,files,services,firewall,compose"
   --update
