@@ -66,6 +66,7 @@ common_env=(
   "CAPTURE_DIR=$test_root/capture"
   "MISE_CACHE_DATABASE_PASSWORD=database_password_123456"
   "MISE_CACHE_IMAGE=ghcr.io/jdx/mise-cache@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  "OVH_SSH_HOST=mise-cache-prod.tailnet.example"
   "PATH=$test_root/bin:$PATH"
   "R2_ACCESS_KEY_ID=r2-access-key"
   "R2_SECRET_ACCESS_KEY=r2-secret-key"
@@ -93,7 +94,7 @@ env "${common_env[@]}" \
 
 grep -Fxq 'bootstrap' "$test_root/capture/args"
 grep -Fxq 'remote' "$test_root/capture/args"
-grep -Fxq 'ubuntu@192.0.2.10' "$test_root/capture/args"
+grep -Fxq 'ubuntu@mise-cache-prod.tailnet.example' "$test_root/capture/args"
 grep -Fxq 'packages,files,services,firewall,compose' "$test_root/capture/args"
 grep -Fxq -- '--port' "$test_root/capture/args"
 grep -Fxq '2222' "$test_root/capture/args"

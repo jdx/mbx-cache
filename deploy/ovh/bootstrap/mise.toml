@@ -95,6 +95,15 @@ action = "allow"
 port = 443
 protocol = "udp"
 
+[[bootstrap.linux.firewall.rules]]
+name = "tailscale-ssh"
+direction = "incoming"
+action = "allow"
+port = 22
+protocol = "tcp"
+source = "100.64.0.0/10"
+interface = "tailscale0"
+
 [bootstrap.compose.mise-cache]
 project_dir = "/opt/mise-cache"
 files = ["compose.yaml"]

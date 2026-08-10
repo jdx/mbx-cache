@@ -3,7 +3,7 @@ output "server_ipv4" {
 }
 
 output "vps_service_name" {
-  value = ovh_vps.cache.name
+  value = local.create_vps ? ovh_vps.cache[0].name : null
 }
 
 output "cache_url" {
@@ -15,5 +15,5 @@ output "r2_endpoint" {
 }
 
 output "r2_bucket" {
-  value = cloudflare_r2_bucket.cache.name
+  value = var.r2_bucket
 }

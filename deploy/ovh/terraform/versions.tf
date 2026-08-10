@@ -2,10 +2,6 @@ terraform {
   required_version = ">= 1.8.0"
 
   required_providers {
-    cloudflare = {
-      source  = "cloudflare/cloudflare"
-      version = "~> 5.0"
-    }
     ovh = {
       source  = "ovh/ovh"
       version = "~> 2.17"
@@ -13,5 +9,6 @@ terraform {
   }
 }
 
-provider "cloudflare" {}
-provider "ovh" {}
+provider "ovh" {
+  ignore_init_error = !local.create_vps
+}

@@ -23,6 +23,16 @@ jobs:
       - run: terraform -chdir=deploy/ovh/terraform fmt -check -recursive
       - run: terraform -chdir=deploy/ovh/terraform init -backend=false
       - run: terraform -chdir=deploy/ovh/terraform validate
+      - name: Plan existing-server deployment without provider credentials
+        run: |
+          terraform -chdir=deploy/ovh/terraform plan \
+            -input=false \
+            -lock=false \
+            -refresh=false \
+            -var='domain=cache.mise.jdx.dev' \
+            -var='cloudflare_account_id=0123456789abcdef0123456789abcdef' \
+            -var='r2_bucket=mise-cache-production' \
+            -var='existing_server_ipv4=203.0.113.10'
       - name: Validate bootstrap plan
         run: |
           install -d -m 0700 deploy/ovh/bootstrap/runtime
