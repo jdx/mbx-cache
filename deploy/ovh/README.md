@@ -178,10 +178,15 @@ GitHub OIDC is configured with these server-enforced grants:
 - `jdx/mise` on `main`: read/write;
 - `jdx/mise` tag workflows: read/write;
 - pull-request workflows: read-only; and
-- other push workflows: read-only.
+- other push workflows: read-only; and
+- the exact `jdx/mise-cache` production deployment workflow: read/write for
+  its isolated qualification namespace.
 
 Override `MISE_CACHE_GITHUB_REPOSITORY` and `MISE_CACHE_GITHUB_OWNER_ID` when
-deploying for another repository owner.
+deploying for another repository owner. Override
+`MISE_CACHE_DEPLOY_GITHUB_REPOSITORY` and
+`MISE_CACHE_DEPLOY_GITHUB_WORKFLOW_REF` together when deployment is managed by
+another repository or workflow.
 
 ## Verify and operate
 

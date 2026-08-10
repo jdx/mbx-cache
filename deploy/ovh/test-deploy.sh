@@ -53,6 +53,17 @@ printf '%s\n' "$project_dir" >"$CAPTURE_DIR/project-dir"
 grep -Fq 'POSTGRES_PASSWORD="database_password_123456"' "$project_dir/runtime/.env"
 grep -Fq 'AWS_ACCESS_KEY_ID="r2-access-key"' "$project_dir/runtime/cache.env"
 grep -Fq 'AWS_SECRET_ACCESS_KEY="r2-secret-key"' "$project_dir/runtime/cache.env"
+oidc_json=$(sed -n 's/^MISE_CACHE_OIDC_PROVIDERS_JSON=//p' "$project_dir/runtime/cache.env" | jq -c fromjson)
+jq -e '
+  .[0].rules | any(
+    .claims.repository == "jdx/mise-cache" and
+    .claims.repository_owner_id == "216188" and
+    .claims.environment == "production" and
+    .claims.workflow_ref == "jdx/mise-cache/.github/workflows/release-plz.yml@refs/heads/main" and
+    .read == ["jdx/mise-cache"] and
+    .write == ["jdx/mise-cache"]
+  )
+' <<<"$oidc_json" >/dev/null
 grep -Fq 'port = 2222' "$project_dir/mise.local.toml"
 grep -Fq 'source = "203.0.113.10/32"' "$project_dir/mise.local.toml"
 if grep -R -Fq 'must-not-be-forwarded' "$project_dir"; then
