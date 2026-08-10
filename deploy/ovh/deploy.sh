@@ -49,6 +49,8 @@ fi
 
 github_repository=${MISE_CACHE_GITHUB_REPOSITORY:-jdx/mise}
 github_owner_id=${MISE_CACHE_GITHUB_OWNER_ID:-216188}
+deployment_repository=${MISE_CACHE_DEPLOY_GITHUB_REPOSITORY:-jdx/mise-cache}
+deployment_workflow_ref=${MISE_CACHE_DEPLOY_GITHUB_WORKFLOW_REF:-jdx/mise-cache/.github/workflows/release-plz.yml@refs/heads/main}
 ssh_user=${OVH_SSH_USER:-ubuntu}
 ssh_port=${OVH_SSH_PORT:-22}
 
@@ -58,6 +60,14 @@ if [[ ! $github_repository =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
 fi
 if [[ ! $github_owner_id =~ ^[0-9]+$ ]]; then
   echo "MISE_CACHE_GITHUB_OWNER_ID must be numeric" >&2
+  exit 1
+fi
+if [[ ! $deployment_repository =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+  echo "MISE_CACHE_DEPLOY_GITHUB_REPOSITORY must be an owner/repository name" >&2
+  exit 1
+fi
+if [[ ! $deployment_workflow_ref =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[.]github/workflows/[A-Za-z0-9_.-]+[.]ya?ml@refs/heads/[A-Za-z0-9_./-]+$ ]]; then
+  echo "MISE_CACHE_DEPLOY_GITHUB_WORKFLOW_REF must identify a workflow on a branch" >&2
   exit 1
 fi
 if [[ ! $ssh_user =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
@@ -101,6 +111,8 @@ fi
 
 oidc_providers=$(jq -cn \
   --arg audience "$cache_url" \
+  --arg deployment_repository "$deployment_repository" \
+  --arg deployment_workflow_ref "$deployment_workflow_ref" \
   --arg owner_id "$github_owner_id" \
   --arg repository "$github_repository" \
   '[{
@@ -110,7 +122,8 @@ oidc_providers=$(jq -cn \
       {claims: {repository: $repository, repository_owner_id: $owner_id, ref: "refs/heads/main"}, read: [$repository], write: [$repository]},
       {claims: {repository: $repository, repository_owner_id: $owner_id, ref_type: "tag"}, read: [$repository], write: [$repository]},
       {claims: {repository: $repository, repository_owner_id: $owner_id, event_name: "pull_request"}, read: [$repository], write: []},
-      {claims: {repository: $repository, repository_owner_id: $owner_id, event_name: "push"}, read: [$repository], write: []}
+      {claims: {repository: $repository, repository_owner_id: $owner_id, event_name: "push"}, read: [$repository], write: []},
+      {claims: {repository: $deployment_repository, repository_owner_id: $owner_id, environment: "production", workflow_ref: $deployment_workflow_ref}, read: [$deployment_repository], write: [$deployment_repository]}
     ]
   }]')
 
