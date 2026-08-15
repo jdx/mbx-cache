@@ -1,16 +1,17 @@
 use axum::{
     Json, Router,
-    body::Body,
+    body::{Body, Bytes},
     extract::{Path, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryStreamExt, stream};
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 use std::{
     collections::HashSet,
+    io,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -29,6 +30,12 @@ use crate::{
     },
     storage::{BlobStore, PutOutcome},
 };
+
+const BLOB_PACK_MEDIA_TYPE: &str = "application/vnd.mise.cache-blob-pack.v1";
+const BLOB_PACK_MAGIC: &[u8; 8] = b"MISEPK01";
+const BLOB_PACK_HEADER_BYTES: usize = 1 + 32 + 8;
+const MAX_BATCH_ITEMS: usize = 10_000;
+const MAX_PACK_STORAGE_READS: usize = 16;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -66,6 +73,7 @@ pub fn router(state: AppState) -> Router {
             get(get_blob).put(put_blob),
         )
         .route("/v1/blobs:missing", post(missing_blobs))
+        .route("/v1/blobs:pack", post(pack_blobs))
         .route(
             "/v1/action-results/{algorithm}/{hash}/{size}",
             get(get_action_result).put(put_action_result),
@@ -93,8 +101,8 @@ async fn capabilities(State(state): State<AppState>) -> impl IntoResponse {
             "rustc":{"action_schema":1,"metadata_schema":1},
             "task":{"action_schema":1,"metadata_schema":1}
         },
-        "features":{"action_manifests":true,"batch":true,"resumable_uploads":false,"delegated_transfers":false},
-        "limits":{"max_batch_items":10000,"max_inline_blob_bytes":1048576,"max_blob_bytes":state.max_blob_bytes}
+        "features":{"action_manifests":true,"batch":true,"blob_packs":true,"resumable_uploads":false,"delegated_transfers":false},
+        "limits":{"max_batch_items":MAX_BATCH_ITEMS,"max_inline_blob_bytes":1048576,"max_blob_bytes":state.max_blob_bytes,"max_pack_bytes":state.max_blob_bytes}
     }))
 }
 
@@ -215,24 +223,113 @@ async fn missing_blobs(
     Json(request): Json<MissingRequest>,
 ) -> Result<Json<MissingResponse>, ApiError> {
     let namespace = state.auth.authorize(&headers, Access::Read).await?;
-    if request.digests.len() > 10_000 {
+    if request.digests.len() > MAX_BATCH_ITEMS {
         return Err(ApiError::bad_request(
             "at most 10000 digests may be checked",
         ));
     }
-    let mut missing = Vec::new();
+    for digest in &request.digests {
+        validate_digest(digest)?;
+    }
+    let visible = state
+        .metadata
+        .visible_blobs(&namespace, &request.digests)
+        .await
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let missing = request
+        .digests
+        .into_iter()
+        .filter(|digest| !visible.contains(digest))
+        .collect();
+    Ok(Json(MissingResponse { missing }))
+}
+
+async fn pack_blobs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<MissingRequest>,
+) -> Result<Response, ApiError> {
+    let namespace = state.auth.authorize(&headers, Access::Read).await?;
+    if request.digests.len() > MAX_BATCH_ITEMS {
+        return Err(ApiError::bad_request("at most 10000 digests may be packed"));
+    }
+    let mut total_bytes = 0_u64;
+    let mut seen = HashSet::new();
+    let mut requested = Vec::with_capacity(request.digests.len());
     for digest in request.digests {
         validate_digest(&digest)?;
-        if !state
-            .metadata
-            .blob_visible(&namespace, &digest)
-            .await
-            .map_err(ApiError::internal)?
-        {
-            missing.push(digest);
+        if seen.insert(digest.clone()) {
+            total_bytes = total_bytes
+                .checked_add(digest.size)
+                .ok_or_else(|| ApiError::too_large("blob pack is too large"))?;
+            if total_bytes > state.max_blob_bytes {
+                return Err(ApiError::too_large(
+                    "blob pack exceeds the configured size limit",
+                ));
+            }
+            requested.push(digest);
         }
     }
-    Ok(Json(MissingResponse { missing }))
+    let visible = state
+        .metadata
+        .visible_blobs(&namespace, &requested)
+        .await
+        .map_err(ApiError::internal)?;
+    let mut entries = Vec::with_capacity(visible.len());
+    for digest in visible {
+        entries.push((pack_blob_header(&digest)?, digest));
+    }
+    let store = state.blobs.clone();
+    let metrics = state.metrics.clone();
+    let response_stream = async_stream::try_stream! {
+        yield Bytes::from_static(BLOB_PACK_MAGIC);
+        let reads = stream::iter(entries.into_iter().map(|(header, digest)| {
+            let store = store.clone();
+            async move {
+                let blob = store
+                    .get(&digest)
+                    .await
+                    .map_err(io::Error::other)?
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "visible blob is missing from storage"))?;
+                if blob.size != digest.size {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "stored blob size does not match its digest"));
+                }
+                Ok::<_, io::Error>((header, blob))
+            }
+        }));
+        let mut reads = reads.buffered(MAX_PACK_STORAGE_READS);
+        while let Some(entry) = reads.next().await {
+            let (header, mut blob) = entry?;
+            yield header;
+            while let Some(chunk) = blob.stream.next().await {
+                yield chunk?;
+            }
+            metrics.blob_hits.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    .map_err(|error: io::Error| error);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, BLOB_PACK_MEDIA_TYPE)
+        .body(Body::from_stream(response_stream))
+        .map_err(ApiError::internal)
+}
+
+fn pack_blob_header(digest: &Digest) -> Result<Bytes, ApiError> {
+    let hash = hex::decode(&digest.hash).map_err(ApiError::bad_request)?;
+    if hash.len() != 32 {
+        return Err(ApiError::bad_request("invalid digest hash length"));
+    }
+    let mut header = Vec::with_capacity(BLOB_PACK_HEADER_BYTES);
+    header.push(match digest.algorithm {
+        Algorithm::Blake3 => 1,
+        Algorithm::Sha256 => 2,
+    });
+    header.extend_from_slice(&hash);
+    header.extend_from_slice(&digest.size.to_be_bytes());
+    Ok(Bytes::from(header))
 }
 
 async fn get_action_result(
@@ -896,6 +993,39 @@ mod tests {
         }
     }
 
+    fn decode_blob_pack(bytes: &[u8]) -> Vec<(Digest, Vec<u8>)> {
+        assert!(bytes.starts_with(BLOB_PACK_MAGIC));
+        let mut offset = BLOB_PACK_MAGIC.len();
+        let mut entries = Vec::new();
+        while offset < bytes.len() {
+            assert!(bytes.len() - offset >= BLOB_PACK_HEADER_BYTES);
+            let algorithm = match bytes[offset] {
+                1 => Algorithm::Blake3,
+                2 => Algorithm::Sha256,
+                value => panic!("unexpected blob pack algorithm {value}"),
+            };
+            let hash = hex::encode(&bytes[offset + 1..offset + 33]);
+            let size = u64::from_be_bytes(
+                bytes[offset + 33..offset + BLOB_PACK_HEADER_BYTES]
+                    .try_into()
+                    .unwrap(),
+            );
+            offset += BLOB_PACK_HEADER_BYTES;
+            let end = offset + usize::try_from(size).unwrap();
+            assert!(end <= bytes.len());
+            entries.push((
+                Digest {
+                    algorithm,
+                    hash,
+                    size,
+                },
+                bytes[offset..end].to_vec(),
+            ));
+            offset = end;
+        }
+        entries
+    }
+
     fn canonical(value: serde_json::Value) -> Vec<u8> {
         serde_json::to_vec(&value).unwrap()
     }
@@ -1040,6 +1170,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn streams_visible_blobs_in_a_deduplicated_pack() {
+        let (app, _directory) = test_app().await;
+        let first_bytes = b"first cached output";
+        let second_bytes = b"second cached output";
+        let first = upload_blob(&app, first_bytes).await;
+        let second = upload_blob(&app, second_bytes).await;
+        let missing = digest(b"missing cached output");
+        let body = serde_json::to_vec(&serde_json::json!({
+            "digests":[second, missing, first, second]
+        }))
+        .unwrap();
+        let response = app
+            .oneshot(request("POST", "/v1/blobs:pack".into(), Body::from(body)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            BLOB_PACK_MEDIA_TYPE
+        );
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            decode_blob_pack(&bytes),
+            vec![
+                (second, second_bytes.to_vec()),
+                (first, first_bytes.to_vec())
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn blob_packs_do_not_disclose_other_namespaces() {
+        let (app, _directory) = test_app().await;
+        let stored = upload_blob(&app, b"private cached output").await;
+        let body = serde_json::to_vec(&serde_json::json!({"digests":[stored]})).unwrap();
+        let mut request = request("POST", "/v1/blobs:pack".into(), Body::from(body));
+        request.headers_mut().insert(
+            "mise-cache-namespace",
+            header::HeaderValue::from_static("other/project"),
+        );
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), BLOB_PACK_MAGIC);
+    }
+
+    #[tokio::test]
+    async fn rejects_blob_packs_over_the_configured_limit() {
+        let (app, _directory) = test_app().await;
+        let oversized = Digest {
+            algorithm: Algorithm::Blake3,
+            hash: "0".repeat(64),
+            size: 1024 * 1024 + 1,
+        };
+        let body = serde_json::to_vec(&serde_json::json!({"digests":[oversized]})).unwrap();
+        let response = app
+            .oneshot(request("POST", "/v1/blobs:pack".into(), Body::from(body)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
     async fn publishes_action_result_only_after_references_exist() {
         let (app, _directory) = test_app().await;
         let action = upload_blob(&app, &task_action(1)).await;
@@ -1092,6 +1285,8 @@ mod tests {
         assert_eq!(body["action_kinds"]["task"]["metadata_schema"], 1);
         assert_eq!(body["action_kinds"]["rustc"]["action_schema"], 1);
         assert_eq!(body["action_kinds"]["rustc"]["metadata_schema"], 1);
+        assert_eq!(body["features"]["blob_packs"], true);
+        assert_eq!(body["limits"]["max_pack_bytes"], 1024 * 1024);
         assert!(body["features"].get("signed_results").is_none());
     }
 

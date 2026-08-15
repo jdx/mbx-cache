@@ -16,12 +16,17 @@ pub struct MemoryMetadata {
 
 #[async_trait]
 impl MetadataStore for MemoryMetadata {
-    async fn blob_visible(&self, namespace: &str, digest: &Digest) -> anyhow::Result<bool> {
-        Ok(self
-            .blobs
-            .read()
-            .expect("metadata lock poisoned")
-            .contains(&(namespace.to_owned(), digest.clone())))
+    async fn visible_blobs(
+        &self,
+        namespace: &str,
+        digests: &[Digest],
+    ) -> anyhow::Result<Vec<Digest>> {
+        let blobs = self.blobs.read().expect("metadata lock poisoned");
+        Ok(digests
+            .iter()
+            .filter(|digest| blobs.contains(&(namespace.to_owned(), (*digest).clone())))
+            .cloned()
+            .collect())
     }
 
     async fn register_blob(&self, namespace: &str, digest: &Digest) -> anyhow::Result<()> {

@@ -18,12 +18,60 @@ impl PostgresMetadata {
     }
 }
 
+fn representable_digests(digests: &[Digest]) -> Vec<(&Digest, i64)> {
+    digests
+        .iter()
+        .filter_map(|digest| i64::try_from(digest.size).ok().map(|size| (digest, size)))
+        .collect()
+}
+
 #[async_trait]
 impl MetadataStore for PostgresMetadata {
-    async fn blob_visible(&self, namespace: &str, digest: &Digest) -> anyhow::Result<bool> {
-        Ok(sqlx::query("SELECT 1 FROM namespace_blobs WHERE namespace = $1 AND algorithm = $2 AND hash = $3 AND size = $4")
-            .bind(namespace).bind(digest.algorithm.to_string()).bind(&digest.hash).bind(digest.size as i64)
-            .fetch_optional(&self.pool).await?.is_some())
+    async fn visible_blobs(
+        &self,
+        namespace: &str,
+        digests: &[Digest],
+    ) -> anyhow::Result<Vec<Digest>> {
+        let digests = representable_digests(digests);
+        if digests.is_empty() {
+            return Ok(Vec::new());
+        }
+        let algorithms = digests
+            .iter()
+            .map(|(digest, _)| digest.algorithm.to_string())
+            .collect::<Vec<_>>();
+        let hashes = digests
+            .iter()
+            .map(|(digest, _)| digest.hash.clone())
+            .collect::<Vec<_>>();
+        let sizes = digests.iter().map(|(_, size)| *size).collect::<Vec<_>>();
+        let rows = sqlx::query(
+            "SELECT requested.ordinality \
+             FROM UNNEST($2::text[], $3::text[], $4::bigint[]) WITH ORDINALITY \
+                  AS requested(algorithm, hash, size, ordinality) \
+             JOIN namespace_blobs AS blobs \
+               ON blobs.algorithm = requested.algorithm \
+              AND blobs.hash = requested.hash \
+              AND blobs.size = requested.size \
+             WHERE blobs.namespace = $1 \
+             ORDER BY requested.ordinality",
+        )
+        .bind(namespace)
+        .bind(algorithms)
+        .bind(hashes)
+        .bind(sizes)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let ordinal: i64 = row.try_get("ordinality")?;
+                let index = usize::try_from(ordinal - 1)?;
+                digests
+                    .get(index)
+                    .map(|(digest, _)| (*digest).clone())
+                    .ok_or_else(|| anyhow::anyhow!("database returned an invalid blob ordinal"))
+            })
+            .collect()
     }
 
     async fn register_blob(&self, namespace: &str, digest: &Digest) -> anyhow::Result<()> {
@@ -116,7 +164,8 @@ impl MetadataStore for PostgresMetadata {
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::MIGRATOR;
+    use super::{MIGRATOR, representable_digests};
+    use crate::model::{Algorithm, Digest};
 
     #[test]
     fn embedded_migration_versions_are_unique() {
@@ -128,5 +177,24 @@ mod tests {
                 migration.version
             );
         }
+    }
+
+    #[test]
+    fn unrepresentable_blob_sizes_are_not_queried() {
+        let representable = Digest {
+            algorithm: Algorithm::Blake3,
+            hash: "0".repeat(64),
+            size: i64::MAX as u64,
+        };
+        let unrepresentable = Digest {
+            algorithm: Algorithm::Blake3,
+            hash: "1".repeat(64),
+            size: i64::MAX as u64 + 1,
+        };
+
+        assert_eq!(
+            representable_digests(&[representable.clone(), unrepresentable]),
+            vec![(&representable, i64::MAX)]
+        );
     }
 }

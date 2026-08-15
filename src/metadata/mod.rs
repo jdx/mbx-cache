@@ -28,7 +28,17 @@ pub enum ManifestCommitOutcome {
 
 #[async_trait]
 pub trait MetadataStore: Send + Sync {
-    async fn blob_visible(&self, namespace: &str, digest: &Digest) -> anyhow::Result<bool>;
+    async fn visible_blobs(
+        &self,
+        namespace: &str,
+        digests: &[Digest],
+    ) -> anyhow::Result<Vec<Digest>>;
+    async fn blob_visible(&self, namespace: &str, digest: &Digest) -> anyhow::Result<bool> {
+        Ok(!self
+            .visible_blobs(namespace, std::slice::from_ref(digest))
+            .await?
+            .is_empty())
+    }
     async fn register_blob(&self, namespace: &str, digest: &Digest) -> anyhow::Result<()>;
     async fn get(&self, namespace: &str, action: &Digest) -> anyhow::Result<Option<ActionResult>>;
     async fn commit(
