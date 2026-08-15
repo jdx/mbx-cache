@@ -20,10 +20,53 @@ impl PostgresMetadata {
 
 #[async_trait]
 impl MetadataStore for PostgresMetadata {
-    async fn blob_visible(&self, namespace: &str, digest: &Digest) -> anyhow::Result<bool> {
-        Ok(sqlx::query("SELECT 1 FROM namespace_blobs WHERE namespace = $1 AND algorithm = $2 AND hash = $3 AND size = $4")
-            .bind(namespace).bind(digest.algorithm.to_string()).bind(&digest.hash).bind(digest.size as i64)
-            .fetch_optional(&self.pool).await?.is_some())
+    async fn visible_blobs(
+        &self,
+        namespace: &str,
+        digests: &[Digest],
+    ) -> anyhow::Result<Vec<Digest>> {
+        if digests.is_empty() {
+            return Ok(Vec::new());
+        }
+        let algorithms = digests
+            .iter()
+            .map(|digest| digest.algorithm.to_string())
+            .collect::<Vec<_>>();
+        let hashes = digests
+            .iter()
+            .map(|digest| digest.hash.clone())
+            .collect::<Vec<_>>();
+        let sizes = digests
+            .iter()
+            .map(|digest| i64::try_from(digest.size))
+            .collect::<Result<Vec<_>, _>>()?;
+        let rows = sqlx::query(
+            "SELECT requested.ordinality \
+             FROM UNNEST($2::text[], $3::text[], $4::bigint[]) WITH ORDINALITY \
+                  AS requested(algorithm, hash, size, ordinality) \
+             JOIN namespace_blobs AS blobs \
+               ON blobs.algorithm = requested.algorithm \
+              AND blobs.hash = requested.hash \
+              AND blobs.size = requested.size \
+             WHERE blobs.namespace = $1 \
+             ORDER BY requested.ordinality",
+        )
+        .bind(namespace)
+        .bind(algorithms)
+        .bind(hashes)
+        .bind(sizes)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                let ordinal: i64 = row.try_get("ordinality")?;
+                let index = usize::try_from(ordinal - 1)?;
+                digests
+                    .get(index)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("database returned an invalid blob ordinal"))
+            })
+            .collect()
     }
 
     async fn register_blob(&self, namespace: &str, digest: &Digest) -> anyhow::Result<()> {
