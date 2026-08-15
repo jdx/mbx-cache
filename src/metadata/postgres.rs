@@ -18,6 +18,13 @@ impl PostgresMetadata {
     }
 }
 
+fn representable_digests(digests: &[Digest]) -> Vec<(&Digest, i64)> {
+    digests
+        .iter()
+        .filter_map(|digest| i64::try_from(digest.size).ok().map(|size| (digest, size)))
+        .collect()
+}
+
 #[async_trait]
 impl MetadataStore for PostgresMetadata {
     async fn visible_blobs(
@@ -25,21 +32,19 @@ impl MetadataStore for PostgresMetadata {
         namespace: &str,
         digests: &[Digest],
     ) -> anyhow::Result<Vec<Digest>> {
+        let digests = representable_digests(digests);
         if digests.is_empty() {
             return Ok(Vec::new());
         }
         let algorithms = digests
             .iter()
-            .map(|digest| digest.algorithm.to_string())
+            .map(|(digest, _)| digest.algorithm.to_string())
             .collect::<Vec<_>>();
         let hashes = digests
             .iter()
-            .map(|digest| digest.hash.clone())
+            .map(|(digest, _)| digest.hash.clone())
             .collect::<Vec<_>>();
-        let sizes = digests
-            .iter()
-            .map(|digest| i64::try_from(digest.size))
-            .collect::<Result<Vec<_>, _>>()?;
+        let sizes = digests.iter().map(|(_, size)| *size).collect::<Vec<_>>();
         let rows = sqlx::query(
             "SELECT requested.ordinality \
              FROM UNNEST($2::text[], $3::text[], $4::bigint[]) WITH ORDINALITY \
@@ -63,7 +68,7 @@ impl MetadataStore for PostgresMetadata {
                 let index = usize::try_from(ordinal - 1)?;
                 digests
                     .get(index)
-                    .cloned()
+                    .map(|(digest, _)| (*digest).clone())
                     .ok_or_else(|| anyhow::anyhow!("database returned an invalid blob ordinal"))
             })
             .collect()
@@ -159,7 +164,8 @@ impl MetadataStore for PostgresMetadata {
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::MIGRATOR;
+    use super::{MIGRATOR, representable_digests};
+    use crate::model::{Algorithm, Digest};
 
     #[test]
     fn embedded_migration_versions_are_unique() {
@@ -171,5 +177,24 @@ mod tests {
                 migration.version
             );
         }
+    }
+
+    #[test]
+    fn unrepresentable_blob_sizes_are_not_queried() {
+        let representable = Digest {
+            algorithm: Algorithm::Blake3,
+            hash: "0".repeat(64),
+            size: i64::MAX as u64,
+        };
+        let unrepresentable = Digest {
+            algorithm: Algorithm::Blake3,
+            hash: "1".repeat(64),
+            size: i64::MAX as u64 + 1,
+        };
+
+        assert_eq!(
+            representable_digests(&[representable.clone(), unrepresentable]),
+            vec![(&representable, i64::MAX)]
+        );
     }
 }
