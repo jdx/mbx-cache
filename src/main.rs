@@ -1,6 +1,7 @@
 mod auth;
 mod config;
 mod metadata;
+mod metrics;
 mod model;
 mod server;
 mod storage;
