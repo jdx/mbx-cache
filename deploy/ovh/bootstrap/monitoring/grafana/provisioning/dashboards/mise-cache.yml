@@ -5,8 +5,8 @@ providers:
     orgId: 1
     folder: mise-cache
     type: file
-    disableDeletion: true
-    editable: false
+    disableDeletion: false
+    allowUiUpdates: false
     updateIntervalSeconds: 30
     options:
       path: /etc/grafana/dashboards

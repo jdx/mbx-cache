@@ -221,7 +221,8 @@ reachable only through the loopback-bound port. Dashboard and datasource
 changes belong in `deploy/ovh/bootstrap/monitoring` and are applied by the next
 convergent deployment. The deployment hashes those files into the affected
 service definition so startup-loaded configuration changes recreate only
-Prometheus or Grafana as needed.
+Prometheus or Grafana as needed. Grafana keeps no mutable state: its exact
+datasource and dashboard set is reprovisioned from these files on recreation.
 
 Do not add an R2 expiration lifecycle yet. The current metadata store does not
 garbage-collect references when objects expire, so independent R2 expiration

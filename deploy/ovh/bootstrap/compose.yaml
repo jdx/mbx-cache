@@ -111,9 +111,9 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
-      - grafana:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - ./monitoring/grafana/provisioning/datasources/prometheus.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+      - ./monitoring/grafana/provisioning/dashboards/mise-cache.yml:/etc/grafana/provisioning/dashboards/mise-cache.yml:ro
+      - ./monitoring/grafana/dashboards/mise-cache.json:/etc/grafana/dashboards/mise-cache.json:ro
     networks: [internal]
 
 networks:
@@ -122,7 +122,6 @@ networks:
 volumes:
   caddy_config: {}
   caddy_data: {}
-  grafana: {}
   postgres: {}
   prometheus: {}
   staging: {}
