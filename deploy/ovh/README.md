@@ -206,8 +206,20 @@ service state and the atomic firewall fingerprint, and recreates Compose
 containers only when their effective configuration has changed.
 
 Prometheus metrics remain available to containers at `/metrics`, but Caddy
-does not expose that endpoint publicly. Add a private metrics collector before
-enabling external monitoring.
+does not expose that endpoint publicly. Prometheus collects them every five
+seconds and retains up to 90 days or 2 GB, whichever bound is reached first.
+Grafana and Prometheus bind only to the host loopback interface. Open the
+provisioned dashboard through an SSH tunnel:
+
+```sh
+ssh -N -L 3000:127.0.0.1:3000 ubuntu@"$OVH_SSH_HOST"
+```
+
+Then visit `http://127.0.0.1:3000/d/mise-cache/mise-cache`. Grafana has no
+local administrator or editor account; anonymous access is read-only and is
+reachable only through the loopback-bound port. Dashboard and datasource
+changes belong in `deploy/ovh/bootstrap/monitoring` and are applied by the next
+convergent deployment.
 
 Do not add an R2 expiration lifecycle yet. The current metadata store does not
 garbage-collect references when objects expire, so independent R2 expiration

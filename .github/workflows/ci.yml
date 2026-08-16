@@ -50,6 +50,12 @@ jobs:
           SSH_CONNECTION="203.0.113.10 54321 192.0.2.10 22" \
             MISE_TRUSTED_CONFIG_PATHS="$PWD/deploy/ovh/bootstrap" \
             mise --cd deploy/ovh/bootstrap bootstrap plan --json >/dev/null
+      - name: Validate Compose and dashboard configuration
+        working-directory: deploy/ovh/bootstrap
+        run: |
+          install -m 0600 cache.env.example cache.env
+          docker compose --env-file runtime.env.example config --quiet
+          jq empty monitoring/grafana/dashboards/mise-cache.json
       - run: shellcheck deploy/ovh/deploy.sh deploy/ovh/test-deploy.sh
       - run: deploy/ovh/test-deploy.sh
   test:
