@@ -13,6 +13,36 @@ owner = "root"
 group = "root"
 mode = "0750"
 
+[bootstrap.directories."/opt/mise-cache/monitoring"]
+owner = "root"
+group = "root"
+mode = "0755"
+
+[bootstrap.directories."/opt/mise-cache/monitoring/grafana"]
+owner = "root"
+group = "root"
+mode = "0755"
+
+[bootstrap.directories."/opt/mise-cache/monitoring/grafana/dashboards"]
+owner = "root"
+group = "root"
+mode = "0755"
+
+[bootstrap.directories."/opt/mise-cache/monitoring/grafana/provisioning"]
+owner = "root"
+group = "root"
+mode = "0755"
+
+[bootstrap.directories."/opt/mise-cache/monitoring/grafana/provisioning/dashboards"]
+owner = "root"
+group = "root"
+mode = "0755"
+
+[bootstrap.directories."/opt/mise-cache/monitoring/grafana/provisioning/datasources"]
+owner = "root"
+group = "root"
+mode = "0755"
+
 [bootstrap.files."/etc/apt/apt.conf.d/20auto-upgrades"]
 content = '''
 APT::Periodic::Update-Package-Lists "1";
@@ -53,6 +83,30 @@ source = "./runtime/cache.env"
 owner = "root"
 group = "root"
 mode = "0600"
+
+[bootstrap.files."/opt/mise-cache/monitoring/prometheus.yml"]
+source = "./monitoring/prometheus.yml"
+owner = "root"
+group = "root"
+mode = "0644"
+
+[bootstrap.files."/opt/mise-cache/monitoring/grafana/dashboards/mise-cache.json"]
+source = "./monitoring/grafana/dashboards/mise-cache.json"
+owner = "root"
+group = "root"
+mode = "0644"
+
+[bootstrap.files."/opt/mise-cache/monitoring/grafana/provisioning/dashboards/mise-cache.yml"]
+source = "./monitoring/grafana/provisioning/dashboards/mise-cache.yml"
+owner = "root"
+group = "root"
+mode = "0644"
+
+[bootstrap.files."/opt/mise-cache/monitoring/grafana/provisioning/datasources/prometheus.yml"]
+source = "./monitoring/grafana/provisioning/datasources/prometheus.yml"
+owner = "root"
+group = "root"
+mode = "0644"
 
 [bootstrap.services.docker]
 state = "running"

@@ -51,6 +51,16 @@ printf '%s\n' "$project_dir" >"$CAPTURE_DIR/project-dir"
 [[ $(stat -c %a "$project_dir/runtime/.env") == 600 ]]
 [[ $(stat -c %a "$project_dir/runtime/cache.env") == 600 ]]
 grep -Fq 'POSTGRES_PASSWORD="database_password_123456"' "$project_dir/runtime/.env"
+prometheus_config_hash=$(sha256sum "$project_dir/monitoring/prometheus.yml")
+prometheus_config_hash=${prometheus_config_hash%% *}
+grep -Fq "MISE_CACHE_PROMETHEUS_CONFIG_HASH=\"$prometheus_config_hash\"" "$project_dir/runtime/.env"
+grafana_config_hash=$({
+  sha256sum "$project_dir/monitoring/grafana/dashboards/mise-cache.json"
+  sha256sum "$project_dir/monitoring/grafana/provisioning/dashboards/mise-cache.yml"
+  sha256sum "$project_dir/monitoring/grafana/provisioning/datasources/prometheus.yml"
+} | awk '{print $1}' | sha256sum)
+grafana_config_hash=${grafana_config_hash%% *}
+grep -Fq "MISE_CACHE_GRAFANA_CONFIG_HASH=\"$grafana_config_hash\"" "$project_dir/runtime/.env"
 grep -Fq 'AWS_ACCESS_KEY_ID="r2-access-key"' "$project_dir/runtime/cache.env"
 grep -Fq 'AWS_SECRET_ACCESS_KEY="r2-secret-key"' "$project_dir/runtime/cache.env"
 oidc_json=$(sed -n 's/^MISE_CACHE_OIDC_PROVIDERS_JSON=//p' "$project_dir/runtime/cache.env" | jq -c fromjson)
