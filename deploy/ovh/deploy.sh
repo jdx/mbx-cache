@@ -12,6 +12,15 @@ for command in curl jq mise "$terraform_command"; do
   fi
 done
 
+if command -v sha256sum >/dev/null; then
+  sha256_command=(sha256sum)
+elif command -v shasum >/dev/null; then
+  sha256_command=(shasum -a 256)
+else
+  echo "required command not found: sha256sum or shasum" >&2
+  exit 1
+fi
+
 if ! mise bootstrap remote --help >/dev/null 2>&1; then
   echo "mise 2026.8.2 or newer with 'bootstrap remote' is required" >&2
   exit 1
@@ -165,6 +174,20 @@ trap cleanup EXIT
 cp -R "$script_dir/bootstrap/." "$project_dir/"
 install -d -m 0700 "$project_dir/runtime"
 
+file_sha256() {
+  local digest
+  read -r digest _ < <("${sha256_command[@]}" "$1")
+  printf '%s\n' "$digest"
+}
+
+prometheus_config_hash=$(file_sha256 "$project_dir/monitoring/prometheus.yml")
+grafana_config_hash=$({
+  file_sha256 "$project_dir/monitoring/grafana/dashboards/mise-cache.json"
+  file_sha256 "$project_dir/monitoring/grafana/provisioning/dashboards/mise-cache.yml"
+  file_sha256 "$project_dir/monitoring/grafana/provisioning/datasources/prometheus.yml"
+} | "${sha256_command[@]}")
+grafana_config_hash=${grafana_config_hash%% *}
+
 write_dotenv() {
   local encoded key=$1 value=$2
   encoded=$(jq -Rn --arg value "$value" '$value')
@@ -173,7 +196,9 @@ write_dotenv() {
 
 {
   write_dotenv MISE_CACHE_DOMAIN "$cache_domain"
+  write_dotenv MISE_CACHE_GRAFANA_CONFIG_HASH "$grafana_config_hash"
   write_dotenv MISE_CACHE_IMAGE "$MISE_CACHE_IMAGE"
+  write_dotenv MISE_CACHE_PROMETHEUS_CONFIG_HASH "$prometheus_config_hash"
   write_dotenv POSTGRES_PASSWORD "$MISE_CACHE_DATABASE_PASSWORD"
 } >"$project_dir/runtime/.env"
 
