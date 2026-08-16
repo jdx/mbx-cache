@@ -9,14 +9,7 @@ use axum::{
 use futures_util::{StreamExt, TryStreamExt, stream};
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
-use std::{
-    collections::HashSet,
-    io,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::{collections::HashSet, io, sync::Arc, time::Instant};
 use tempfile::NamedTempFile;
 use tokio::io::AsyncWriteExt;
 use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
@@ -24,6 +17,7 @@ use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
 use crate::{
     auth::{Access, Authorizer},
     metadata::{CommitOutcome, ManifestCommitOutcome, MetadataStore},
+    metrics::Metrics,
     model::{
         ActionResult, Algorithm, Digest, Directory, RustcAction, RustcMetadata, TaskAction,
         TaskActionManifest, TaskMetadata,
@@ -58,7 +52,7 @@ impl AppState {
             metadata,
             auth,
             max_blob_bytes,
-            metrics: Arc::new(Metrics::default()),
+            metrics: Arc::new(Metrics::new()),
         }
     }
 }
@@ -127,7 +121,7 @@ async fn get_blob(
         .await
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found("blob not found"))?;
-    state.metrics.blob_hits.fetch_add(1, Ordering::Relaxed);
+    state.metrics.inc_blob_hit();
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_LENGTH, blob.size)
@@ -199,7 +193,7 @@ async fn put_blob(
         .register_blob(&namespace, &digest)
         .await
         .map_err(ApiError::internal)?;
-    state.metrics.blob_uploads.fetch_add(1, Ordering::Relaxed);
+    state.metrics.inc_blob_upload();
     Ok(match outcome {
         PutOutcome::Created => StatusCode::CREATED,
         PutOutcome::AlreadyExists => StatusCode::NO_CONTENT,
@@ -251,6 +245,7 @@ async fn pack_blobs(
     headers: HeaderMap,
     Json(request): Json<MissingRequest>,
 ) -> Result<Response, ApiError> {
+    let request_started = Instant::now();
     let namespace = state.auth.authorize(&headers, Access::Read).await?;
     if request.digests.len() > MAX_BATCH_ITEMS {
         return Err(ApiError::bad_request("at most 10000 digests may be packed"));
@@ -272,11 +267,28 @@ async fn pack_blobs(
             requested.push(digest);
         }
     }
-    let visible = state
-        .metadata
-        .visible_blobs(&namespace, &requested)
-        .await
-        .map_err(ApiError::internal)?;
+    let metadata_started = Instant::now();
+    let visible = match state.metadata.visible_blobs(&namespace, &requested).await {
+        Ok(visible) => {
+            state
+                .metrics
+                .observe_pack_metadata_query("success", metadata_started.elapsed());
+            visible
+        }
+        Err(error) => {
+            state
+                .metrics
+                .observe_pack_metadata_query("error", metadata_started.elapsed());
+            return Err(ApiError::internal(error));
+        }
+    };
+    let missing_blobs = requested.len().saturating_sub(visible.len()) as u64;
+    let mut pack_guard = state.metrics.start_pack(
+        request_started,
+        requested.len() as u64,
+        total_bytes,
+        missing_blobs,
+    );
     let mut entries = Vec::with_capacity(visible.len());
     for digest in visible {
         entries.push((pack_blob_header(&digest)?, digest));
@@ -284,15 +296,27 @@ async fn pack_blobs(
     let store = state.blobs.clone();
     let metrics = state.metrics.clone();
     let response_stream = async_stream::try_stream! {
+        pack_guard.record_first_byte();
         yield Bytes::from_static(BLOB_PACK_MAGIC);
         let reads = stream::iter(entries.into_iter().map(|(header, digest)| {
             let store = store.clone();
+            let metrics = metrics.clone();
             async move {
-                let blob = store
-                    .get(&digest)
-                    .await
-                    .map_err(io::Error::other)?
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "visible blob is missing from storage"))?;
+                let started = Instant::now();
+                let blob = match store.get(&digest).await {
+                    Ok(Some(blob)) => {
+                        metrics.observe_pack_storage_get("hit", started.elapsed());
+                        blob
+                    }
+                    Ok(None) => {
+                        metrics.observe_pack_storage_get("missing", started.elapsed());
+                        return Err(io::Error::new(io::ErrorKind::NotFound, "visible blob is missing from storage"));
+                    }
+                    Err(error) => {
+                        metrics.observe_pack_storage_get("error", started.elapsed());
+                        return Err(io::Error::other(error));
+                    }
+                };
                 if blob.size != digest.size {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "stored blob size does not match its digest"));
                 }
@@ -301,13 +325,21 @@ async fn pack_blobs(
         }));
         let mut reads = reads.buffered(MAX_PACK_STORAGE_READS);
         while let Some(entry) = reads.next().await {
-            let (header, mut blob) = entry?;
+            let (header, mut blob) = entry.inspect_err(|_| {
+                pack_guard.error();
+            })?;
             yield header;
             while let Some(chunk) = blob.stream.next().await {
-                yield chunk?;
+                let chunk = chunk.inspect_err(|_| {
+                    pack_guard.error();
+                })?;
+                pack_guard.add_served_bytes(chunk.len() as u64);
+                yield chunk;
             }
-            metrics.blob_hits.fetch_add(1, Ordering::Relaxed);
+            pack_guard.blob_served();
+            metrics.inc_blob_hit();
         }
+        pack_guard.complete();
     }
     .map_err(|error: io::Error| error);
     Response::builder()
@@ -346,11 +378,11 @@ async fn get_action_result(
         .map_err(ApiError::internal)?
     {
         Some(result) => {
-            state.metrics.action_hits.fetch_add(1, Ordering::Relaxed);
+            state.metrics.inc_action_hit();
             Ok(Json(result))
         }
         None => {
-            state.metrics.action_misses.fetch_add(1, Ordering::Relaxed);
+            state.metrics.inc_action_miss();
             Err(ApiError::not_found("action result not found"))
         }
     }
@@ -383,7 +415,7 @@ async fn put_action_result(
         .commit(&namespace, &action, &result)
         .await
         .map_err(ApiError::internal)?;
-    state.metrics.action_commits.fetch_add(1, Ordering::Relaxed);
+    state.metrics.inc_action_commit();
     match outcome {
         CommitOutcome::Created => Ok(StatusCode::CREATED),
         CommitOutcome::AlreadyExists => Ok(StatusCode::NO_CONTENT),
@@ -792,21 +824,16 @@ fn validate_entry(names: &mut HashSet<String>, name: &str, mode: u32) -> Result<
     Ok(())
 }
 
-async fn metrics(State(state): State<AppState>) -> String {
-    format!(
-        concat!(
-            "# TYPE mise_cache_blob_hits_total counter\nmise_cache_blob_hits_total {}\n",
-            "# TYPE mise_cache_blob_uploads_total counter\nmise_cache_blob_uploads_total {}\n",
-            "# TYPE mise_cache_action_hits_total counter\nmise_cache_action_hits_total {}\n",
-            "# TYPE mise_cache_action_misses_total counter\nmise_cache_action_misses_total {}\n",
-            "# TYPE mise_cache_action_commits_total counter\nmise_cache_action_commits_total {}\n"
-        ),
-        state.metrics.blob_hits.load(Ordering::Relaxed),
-        state.metrics.blob_uploads.load(Ordering::Relaxed),
-        state.metrics.action_hits.load(Ordering::Relaxed),
-        state.metrics.action_misses.load(Ordering::Relaxed),
-        state.metrics.action_commits.load(Ordering::Relaxed)
-    )
+async fn metrics(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let body = state.metrics.encode().map_err(ApiError::internal)?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(
+            header::CONTENT_TYPE,
+            "application/openmetrics-text; version=1.0.0; charset=utf-8",
+        )
+        .body(Body::from(body))
+        .map_err(ApiError::internal)
 }
 
 fn parse_digest((algorithm, hash, size): (String, String, u64)) -> Result<Digest, ApiError> {
@@ -877,15 +904,6 @@ fn manifest_precondition(headers: &HeaderMap) -> Result<Option<String>, ApiError
 
 fn quoted_etag(etag: &str) -> String {
     format!("\"{etag}\"")
-}
-
-#[derive(Default)]
-struct Metrics {
-    blob_hits: AtomicU64,
-    blob_uploads: AtomicU64,
-    action_hits: AtomicU64,
-    action_misses: AtomicU64,
-    action_commits: AtomicU64,
 }
 
 pub struct ApiError {
@@ -1142,6 +1160,18 @@ mod tests {
         digest
     }
 
+    async fn scrape_metrics(app: &Router) -> (HeaderMap, String) {
+        let response = app
+            .clone()
+            .oneshot(request("GET", "/metrics".into(), Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers().clone();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (headers, String::from_utf8(body.to_vec()).unwrap())
+    }
+
     #[tokio::test]
     async fn streams_and_validates_blobs() {
         let (app, _directory) = test_app().await;
@@ -1198,6 +1228,79 @@ mod tests {
                 (first, first_bytes.to_vec())
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn exports_completed_blob_pack_metrics() {
+        let (app, _directory) = test_app().await;
+        let stored = upload_blob(&app, b"cached output").await;
+        let missing = digest(b"missing output");
+        let requested_bytes = stored.size + missing.size;
+        let body = serde_json::to_vec(&serde_json::json!({
+            "digests":[stored.clone(), missing]
+        }))
+        .unwrap();
+        let response = app
+            .clone()
+            .oneshot(request("POST", "/v1/blobs:pack".into(), Body::from(body)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        response.into_body().collect().await.unwrap();
+
+        let (headers, metrics) = scrape_metrics(&app).await;
+        assert_eq!(
+            headers.get(header::CONTENT_TYPE).unwrap(),
+            "application/openmetrics-text; version=1.0.0; charset=utf-8"
+        );
+        assert!(metrics.contains("mise_cache_build_info{"));
+        assert!(metrics.contains("mise_cache_blob_hits_total 1"));
+        assert!(metrics.contains("mise_cache_blob_uploads_total 1"));
+        assert!(metrics.contains("mise_cache_pack_requests_total{outcome=\"completed\"} 1"));
+        assert!(metrics.contains("mise_cache_pack_in_flight 0"));
+        assert!(metrics.contains("mise_cache_pack_blobs_total{kind=\"requested\"} 2"));
+        assert!(metrics.contains("mise_cache_pack_blobs_total{kind=\"served\"} 1"));
+        assert!(metrics.contains("mise_cache_pack_blobs_total{kind=\"missing\"} 1"));
+        assert!(metrics.contains(&format!(
+            "mise_cache_pack_bytes_total{{kind=\"requested\"}} {requested_bytes}"
+        )));
+        assert!(metrics.contains(&format!(
+            "mise_cache_pack_bytes_total{{kind=\"served\"}} {}",
+            stored.size
+        )));
+        assert!(
+            metrics.contains("mise_cache_pack_duration_seconds_count{outcome=\"completed\"} 1")
+        );
+        assert!(metrics.contains("mise_cache_pack_time_to_first_byte_seconds_count 1"));
+        assert!(metrics.contains(
+            "mise_cache_pack_metadata_query_duration_seconds_count{outcome=\"success\"} 1"
+        ));
+        assert!(metrics.contains("mise_cache_pack_storage_gets_total{outcome=\"hit\"} 1"));
+        assert!(
+            metrics
+                .contains("mise_cache_pack_storage_get_duration_seconds_count{outcome=\"hit\"} 1")
+        );
+    }
+
+    #[tokio::test]
+    async fn records_cancelled_blob_pack_streams() {
+        let (app, _directory) = test_app().await;
+        let stored = upload_blob(&app, b"cached output").await;
+        let body = serde_json::to_vec(&serde_json::json!({"digests":[stored]})).unwrap();
+        let response = app
+            .clone()
+            .oneshot(request("POST", "/v1/blobs:pack".into(), Body::from(body)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        drop(response);
+
+        let (_, metrics) = scrape_metrics(&app).await;
+        assert!(metrics.contains("mise_cache_pack_requests_total{outcome=\"cancelled\"} 1"));
+        assert!(
+            metrics.contains("mise_cache_pack_duration_seconds_count{outcome=\"cancelled\"} 1")
+        );
+        assert!(metrics.contains("mise_cache_pack_in_flight 0"));
     }
 
     #[tokio::test]

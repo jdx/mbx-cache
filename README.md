@@ -178,6 +178,18 @@ Servers advertising `features.blob_packs` accept the same digest-list JSON as `b
 
 Run multiple stateless replicas against the same PostgreSQL database and S3 bucket. Readiness and liveness probes use `/v1/status`. Scrape `/metrics` with Prometheus.
 
+The OpenMetrics endpoint exposes the existing action and blob counters plus detailed blob-pack telemetry:
+
+- accepted pack streams by `completed`, `cancelled`, or `error` outcome
+- in-flight packs and unique requested, missing, and fully served blob counts
+- requested payload bytes and payload bytes actually streamed
+- end-to-end response-body duration and time to first byte
+- namespace visibility-query duration
+- blob-store GET count and response-header latency by `hit`, `missing`, or `error` outcome
+- the running package version and build revision
+
+These metrics intentionally use only fixed, low-cardinality labels. Namespaces, repositories, tokens, OIDC claims, and content digests are never exposed as metric labels. Pack duration includes client backpressure through completion of the response body; time to first byte and blob-store response-header latency separate request setup from streaming time.
+
 Do not expire S3 objects independently of PostgreSQL metadata. The metadata store currently assumes a registered blob remains present, so independent object expiration can leave action results pointing at missing blobs. Until coordinated garbage collection is implemented, monitor storage growth and reset the blob and metadata stores together when reclaiming space.
 
 Back up PostgreSQL and enable S3 versioning or replication as required. The service never exposes a deletion endpoint, so retention and disaster recovery remain administrative concerns.

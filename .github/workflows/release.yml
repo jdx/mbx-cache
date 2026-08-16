@@ -87,6 +87,7 @@ jobs:
         id: push
         with:
           context: .
+          build-args: MISE_CACHE_BUILD_REVISION=${{ needs.prepare.outputs.sha }}
           push: true
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}

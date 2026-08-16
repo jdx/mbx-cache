@@ -1,4 +1,6 @@
 FROM rust:1.97-bookworm AS builder
+ARG MISE_CACHE_BUILD_REVISION=unknown
+ENV MISE_CACHE_BUILD_REVISION=$MISE_CACHE_BUILD_REVISION
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY migrations ./migrations
