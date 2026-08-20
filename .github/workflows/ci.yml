@@ -31,7 +31,7 @@ jobs:
             -refresh=false \
             -var='domain=cache.mise.jdx.dev' \
             -var='cloudflare_account_id=0123456789abcdef0123456789abcdef' \
-            -var='r2_bucket=mise-cache-production' \
+            -var='r2_bucket=mbx-cache-production' \
             -var='existing_server_ipv4=203.0.113.10'
       - name: Validate bootstrap plan
         run: |
@@ -55,7 +55,7 @@ jobs:
         run: |
           install -m 0600 cache.env.example cache.env
           docker compose --env-file runtime.env.example config --quiet
-          jq empty monitoring/grafana/dashboards/mise-cache.json
+          jq empty monitoring/grafana/dashboards/mbx-cache.json
       - run: shellcheck deploy/ovh/deploy.sh deploy/ovh/test-deploy.sh
       - run: deploy/ovh/test-deploy.sh
   test:

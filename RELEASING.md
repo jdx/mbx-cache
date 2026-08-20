@@ -1,4 +1,4 @@
-# Releasing mise-cache
+# Releasing mbx-cache
 
 Releases are managed by release-plz. It derives versions from crates.io and
 updates `Cargo.toml` and `CHANGELOG.md` in a release PR. Every commit on `main`
@@ -13,7 +13,7 @@ A token distinct from `GITHUB_TOKEN` is required so release-plz's pull requests
 trigger the normal CI and review workflows.
 
 Configure a crates.io trusted publisher for owner `jdx`, repository
-`mise-cache`, and workflow `release-plz.yml`. The release job requests a
+`mbx-cache`, and workflow `release-plz.yml`. The release job requests a
 short-lived crates.io token with GitHub OIDC; no long-lived crates.io token is
 stored in GitHub.
 
@@ -36,7 +36,7 @@ stored in GitHub.
    release. A second container build is not run for the release.
 
 The image reference in `container-image.txt` is the value to use for
-`MISE_CACHE_IMAGE` in the OVH deployment.
+`MBX_CACHE_IMAGE` in the OVH deployment.
 
 ## Recovery
 

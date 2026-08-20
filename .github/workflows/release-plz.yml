@@ -10,14 +10,14 @@ permissions: {}
 jobs:
   release:
     name: Release
-    if: github.repository == 'jdx/mise-cache'
+    if: github.repository == 'jdx/mbx-cache'
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
       pull-requests: read
     outputs:
-      tag: ${{ steps.mise-cache-tag.outputs.tag }}
+      tag: ${{ steps.mbx-cache-tag.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -29,19 +29,19 @@ jobs:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
-      - name: Find the mise-cache tag
-        id: mise-cache-tag
+      - name: Find the mbx-cache tag
+        id: mbx-cache-tag
         env:
           RELEASES: ${{ steps.release-plz.outputs.releases }}
         run: |
           tag=""
           if [ -n "$RELEASES" ]; then
-            tag=$(jq -r '[.[] | select(.package_name == "mise-cache")][0].tag // ""' <<<"$RELEASES")
+            tag=$(jq -r '[.[] | select(.package_name == "mbx-cache")][0].tag // ""' <<<"$RELEASES")
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "mise-cache tag: ${tag:-<none released>}"
+          echo "mbx-cache tag: ${tag:-<none released>}"
       - name: Reject an empty release result for a merged release PR
-        if: steps.mise-cache-tag.outputs.tag == ''
+        if: steps.mbx-cache-tag.outputs.tag == ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -74,7 +74,7 @@ jobs:
     timeout-minutes: 30
     environment: production
     concurrency:
-      group: mise-cache-production
+      group: mbx-cache-production
       cancel-in-progress: false
     permissions:
       contents: read
@@ -82,7 +82,7 @@ jobs:
     env:
       CACHE_URL: https://cache.mise.jdx.dev
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
-      MISE_CACHE_DATABASE_PASSWORD: ${{ secrets.MISE_CACHE_DATABASE_PASSWORD }}
+      MBX_CACHE_DATABASE_PASSWORD: ${{ secrets.MBX_CACHE_DATABASE_PASSWORD }}
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
@@ -93,7 +93,7 @@ jobs:
           missing=()
           for name in \
             CLOUDFLARE_ACCOUNT_ID \
-            MISE_CACHE_DATABASE_PASSWORD \
+            MBX_CACHE_DATABASE_PASSWORD \
             R2_ACCESS_KEY_ID \
             R2_SECRET_ACCESS_KEY \
             TS_AUDIENCE \
@@ -131,24 +131,24 @@ jobs:
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           audience: ${{ secrets.TS_AUDIENCE }}
-          tags: tag:mise-cache-ci
-          ping: mise-cache-prod.tail13c301.ts.net
+          tags: tag:mbx-cache-ci
+          ping: mbx-cache-prod.tail13c301.ts.net
 
       - name: Configure deployment outputs
         env:
           TF_VAR_cloudflare_account_id: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_domain: cache.mise.jdx.dev
           TF_VAR_existing_server_ipv4: 15.204.81.200
-          TF_VAR_r2_bucket: mise-cache-production
+          TF_VAR_r2_bucket: mbx-cache-production
         run: |
           terraform -chdir=deploy/ovh/terraform init -backend=false -input=false
           terraform -chdir=deploy/ovh/terraform apply -auto-approve -input=false
 
       - name: Deploy immutable image
         env:
-          MISE_CACHE_DEPLOY_GITHUB_WORKFLOW_REF: jdx/mise-cache/.github/workflows/release-plz.yml@refs/heads/main
-          MISE_CACHE_IMAGE: ${{ format('ghcr.io/jdx/mise-cache@{0}', needs.image.outputs.digest) }}
-          OVH_SSH_HOST: mise-cache-prod.tail13c301.ts.net
+          MBX_CACHE_DEPLOY_GITHUB_WORKFLOW_REF: jdx/mbx-cache/.github/workflows/release-plz.yml@refs/heads/main
+          MBX_CACHE_IMAGE: ${{ format('ghcr.io/jdx/mbx-cache@{0}', needs.image.outputs.digest) }}
+          OVH_SSH_HOST: mbx-cache-prod.tail13c301.ts.net
         run: |
           OVH_SSH_SOURCE_CIDR="$(tailscale ip -4)/32"
           export OVH_SSH_SOURCE_CIDR
@@ -157,7 +157,7 @@ jobs:
 
       - name: Qualify OIDC, PostgreSQL, and R2
         env:
-          CACHE_NAMESPACE: jdx/mise-cache
+          CACHE_NAMESPACE: jdx/mbx-cache
         run: |
           response=$(curl --fail --silent --show-error \
             --get \
@@ -167,17 +167,17 @@ jobs:
           token=$(jq -er '.value | strings | select(length > 0)' <<<"$response")
           echo "::add-mask::$token"
 
-          temporary_dir=$(mktemp -d "${RUNNER_TEMP}/mise-cache-qualification.XXXXXXXX")
+          temporary_dir=$(mktemp -d "${RUNNER_TEMP}/mbx-cache-qualification.XXXXXXXX")
           trap 'rm -rf -- "$temporary_dir"' EXIT
-          printf 'mise-cache production qualification %s\n' "$GITHUB_SHA" >"$temporary_dir/input"
+          printf 'mbx-cache production qualification %s\n' "$GITHUB_SHA" >"$temporary_dir/input"
           digest=$(sha256sum "$temporary_dir/input" | cut -d ' ' -f 1)
           size=$(wc -c <"$temporary_dir/input")
           blob_url="$CACHE_URL/v1/blobs/sha256/$digest/$size"
           headers=(
             -H "Authorization: Bearer $token"
             -H "If-None-Match: *"
-            -H "Mise-Cache-Namespace: $CACHE_NAMESPACE"
-            -H "Mise-Cache-Protocol: 1"
+            -H "Mbx-Cache-Namespace: $CACHE_NAMESPACE"
+            -H "Mbx-Cache-Protocol: 1"
           )
 
           curl --fail --silent --show-error \
@@ -208,7 +208,7 @@ jobs:
   release-pr:
     name: Release PR
     needs: release
-    if: github.repository == 'jdx/mise-cache'
+    if: github.repository == 'jdx/mbx-cache'
     runs-on: ubuntu-latest
     permissions:
       contents: write

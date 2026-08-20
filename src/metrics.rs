@@ -43,13 +43,13 @@ pub struct Metrics {
 
 impl Metrics {
     pub fn new() -> Self {
-        let mut registry = Registry::with_prefix("mise_cache");
+        let mut registry = Registry::with_prefix("mbx_cache");
         registry.register(
             "build",
-            "Build information for the running mise-cache process",
+            "Build information for the running mbx-cache process",
             Info::new(BuildLabels {
                 version: env!("CARGO_PKG_VERSION"),
-                revision: option_env!("MISE_CACHE_BUILD_REVISION").unwrap_or("unknown"),
+                revision: option_env!("MBX_CACHE_BUILD_REVISION").unwrap_or("unknown"),
             }),
         );
 

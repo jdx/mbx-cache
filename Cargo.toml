@@ -1,13 +1,13 @@
 [package]
-name = "mise-cache"
+name = "mbx-cache"
 version = "0.1.1"
 edition = "2024"
 license = "MIT"
-description = "Self-hosted remote build cache for mise"
-repository = "https://github.com/jdx/mise-cache"
-homepage = "https://github.com/jdx/mise-cache"
+description = "Self-hosted remote build cache server for mbx"
+repository = "https://github.com/jdx/mbx-cache"
+homepage = "https://github.com/jdx/mbx-cache"
 readme = "README.md"
-keywords = ["mise", "cache", "build-cache", "remote-cache"]
+keywords = ["mbx", "cache", "build-cache", "remote-cache", "rust"]
 categories = ["command-line-utilities", "development-tools"]
 include = [
   "/src/**",

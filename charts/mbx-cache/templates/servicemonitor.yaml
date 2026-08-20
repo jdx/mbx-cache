@@ -2,9 +2,9 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: {{ .Release.Name }}-mise-cache
+  name: {{ .Release.Name }}-mbx-cache
 spec:
   selector:
-    matchLabels: {app.kubernetes.io/name: mise-cache, app.kubernetes.io/instance: {{ .Release.Name }}}
+    matchLabels: {app.kubernetes.io/name: mbx-cache, app.kubernetes.io/instance: {{ .Release.Name }}}
   endpoints: [{port: http, path: /metrics}]
 {{- end }}

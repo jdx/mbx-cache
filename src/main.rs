@@ -19,7 +19,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "mise_cache=info,tower_http=info".into()),
+                .unwrap_or_else(|_| "mbx_cache=info,tower_http=info".into()),
         )
         .json()
         .init();
@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
     );
     let app = server::router(state);
     let listener = TcpListener::bind(config.listen).await?;
-    info!(address = %config.listen, "mise-cache listening");
+    info!(address = %config.listen, "mbx-cache listening");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;

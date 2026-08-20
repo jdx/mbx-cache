@@ -35,20 +35,20 @@ require_env() {
 }
 
 for name in \
-  MISE_CACHE_DATABASE_PASSWORD \
-  MISE_CACHE_IMAGE \
+  MBX_CACHE_DATABASE_PASSWORD \
+  MBX_CACHE_IMAGE \
   OVH_SSH_SOURCE_CIDR \
   R2_ACCESS_KEY_ID \
   R2_SECRET_ACCESS_KEY; do
   require_env "$name"
 done
 
-if [[ ! $MISE_CACHE_DATABASE_PASSWORD =~ ^[A-Za-z0-9_-]{24,}$ ]]; then
-  echo "MISE_CACHE_DATABASE_PASSWORD must contain at least 24 URL-safe characters" >&2
+if [[ ! $MBX_CACHE_DATABASE_PASSWORD =~ ^[A-Za-z0-9_-]{24,}$ ]]; then
+  echo "MBX_CACHE_DATABASE_PASSWORD must contain at least 24 URL-safe characters" >&2
   exit 1
 fi
-if [[ ! $MISE_CACHE_IMAGE =~ ^.+@sha256:[a-fA-F0-9]{64}$ ]]; then
-  echo "MISE_CACHE_IMAGE must be pinned by sha256 digest" >&2
+if [[ ! $MBX_CACHE_IMAGE =~ ^.+@sha256:[a-fA-F0-9]{64}$ ]]; then
+  echo "MBX_CACHE_IMAGE must be pinned by sha256 digest" >&2
   exit 1
 fi
 if [[ $OVH_SSH_SOURCE_CIDR =~ [[:space:]] ]]; then
@@ -56,15 +56,15 @@ if [[ $OVH_SSH_SOURCE_CIDR =~ [[:space:]] ]]; then
   exit 1
 fi
 
-trusted_repositories_file=${MISE_CACHE_GITHUB_REPOSITORIES_FILE:-$script_dir/trusted-repositories.json}
-deployment_repository=${MISE_CACHE_DEPLOY_GITHUB_REPOSITORY:-jdx/mise-cache}
-deployment_owner_id=${MISE_CACHE_DEPLOY_GITHUB_OWNER_ID:-216188}
-deployment_workflow_ref=${MISE_CACHE_DEPLOY_GITHUB_WORKFLOW_REF:-jdx/mise-cache/.github/workflows/release-plz.yml@refs/heads/main}
+trusted_repositories_file=${MBX_CACHE_GITHUB_REPOSITORIES_FILE:-$script_dir/trusted-repositories.json}
+deployment_repository=${MBX_CACHE_DEPLOY_GITHUB_REPOSITORY:-jdx/mbx-cache}
+deployment_owner_id=${MBX_CACHE_DEPLOY_GITHUB_OWNER_ID:-216188}
+deployment_workflow_ref=${MBX_CACHE_DEPLOY_GITHUB_WORKFLOW_REF:-jdx/mbx-cache/.github/workflows/release-plz.yml@refs/heads/main}
 ssh_user=${OVH_SSH_USER:-ubuntu}
 ssh_port=${OVH_SSH_PORT:-22}
 
 if [[ ! -r $trusted_repositories_file ]]; then
-  echo "MISE_CACHE_GITHUB_REPOSITORIES_FILE is not readable: $trusted_repositories_file" >&2
+  echo "MBX_CACHE_GITHUB_REPOSITORIES_FILE is not readable: $trusted_repositories_file" >&2
   exit 1
 fi
 if ! trusted_repositories=$(jq -ce '
@@ -80,19 +80,19 @@ if ! trusted_repositories=$(jq -ce '
     map({repository, repository_owner_id})
   end
 ' "$trusted_repositories_file"); then
-  echo "MISE_CACHE_GITHUB_REPOSITORIES_FILE is invalid: $trusted_repositories_file" >&2
+  echo "MBX_CACHE_GITHUB_REPOSITORIES_FILE is invalid: $trusted_repositories_file" >&2
   exit 1
 fi
 if [[ ! $deployment_repository =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-  echo "MISE_CACHE_DEPLOY_GITHUB_REPOSITORY must be an owner/repository name" >&2
+  echo "MBX_CACHE_DEPLOY_GITHUB_REPOSITORY must be an owner/repository name" >&2
   exit 1
 fi
 if [[ ! $deployment_owner_id =~ ^[0-9]+$ ]]; then
-  echo "MISE_CACHE_DEPLOY_GITHUB_OWNER_ID must be numeric" >&2
+  echo "MBX_CACHE_DEPLOY_GITHUB_OWNER_ID must be numeric" >&2
   exit 1
 fi
 if [[ ! $deployment_workflow_ref =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[.]github/workflows/[A-Za-z0-9_.-]+[.]ya?ml@refs/heads/[A-Za-z0-9_./-]+$ ]]; then
-  echo "MISE_CACHE_DEPLOY_GITHUB_WORKFLOW_REF must identify a workflow on a branch" >&2
+  echo "MBX_CACHE_DEPLOY_GITHUB_WORKFLOW_REF must identify a workflow on a branch" >&2
   exit 1
 fi
 if [[ ! $ssh_user =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
@@ -159,12 +159,12 @@ oidc_providers=$(jq -cn \
 
 temporary_root=${TMPDIR:-/tmp}
 temporary_root=${temporary_root%/}
-project_dir=$(mktemp -d "$temporary_root/mise-cache-ovh.XXXXXXXX")
+project_dir=$(mktemp -d "$temporary_root/mbx-cache-ovh.XXXXXXXX")
 
 cleanup() {
   local status=$?
   case "$project_dir" in
-    "$temporary_root"/mise-cache-ovh.*) rm -rf -- "$project_dir" ;;
+    "$temporary_root"/mbx-cache-ovh.*) rm -rf -- "$project_dir" ;;
     *) echo "refusing to remove unexpected temporary directory: $project_dir" >&2 ;;
   esac
   return "$status"
@@ -182,8 +182,8 @@ file_sha256() {
 
 prometheus_config_hash=$(file_sha256 "$project_dir/monitoring/prometheus.yml")
 grafana_config_hash=$({
-  file_sha256 "$project_dir/monitoring/grafana/dashboards/mise-cache.json"
-  file_sha256 "$project_dir/monitoring/grafana/provisioning/dashboards/mise-cache.yml"
+  file_sha256 "$project_dir/monitoring/grafana/dashboards/mbx-cache.json"
+  file_sha256 "$project_dir/monitoring/grafana/provisioning/dashboards/mbx-cache.yml"
   file_sha256 "$project_dir/monitoring/grafana/provisioning/datasources/prometheus.yml"
 } | "${sha256_command[@]}")
 grafana_config_hash=${grafana_config_hash%% *}
@@ -195,24 +195,24 @@ write_dotenv() {
 }
 
 {
-  write_dotenv MISE_CACHE_DOMAIN "$cache_domain"
-  write_dotenv MISE_CACHE_GRAFANA_CONFIG_HASH "$grafana_config_hash"
-  write_dotenv MISE_CACHE_IMAGE "$MISE_CACHE_IMAGE"
-  write_dotenv MISE_CACHE_PROMETHEUS_CONFIG_HASH "$prometheus_config_hash"
-  write_dotenv POSTGRES_PASSWORD "$MISE_CACHE_DATABASE_PASSWORD"
+  write_dotenv MBX_CACHE_DOMAIN "$cache_domain"
+  write_dotenv MBX_CACHE_GRAFANA_CONFIG_HASH "$grafana_config_hash"
+  write_dotenv MBX_CACHE_IMAGE "$MBX_CACHE_IMAGE"
+  write_dotenv MBX_CACHE_PROMETHEUS_CONFIG_HASH "$prometheus_config_hash"
+  write_dotenv POSTGRES_PASSWORD "$MBX_CACHE_DATABASE_PASSWORD"
 } >"$project_dir/runtime/.env"
 
 {
-  write_dotenv MISE_CACHE_STORAGE s3
-  write_dotenv MISE_CACHE_DATABASE_URL \
-    "postgres://mise_cache:$MISE_CACHE_DATABASE_PASSWORD@postgres/mise_cache"
-  write_dotenv MISE_CACHE_S3_BUCKET "$r2_bucket"
-  write_dotenv MISE_CACHE_S3_PREFIX v1
-  write_dotenv MISE_CACHE_S3_ENDPOINT "$r2_endpoint"
-  write_dotenv MISE_CACHE_S3_REGION auto
-  write_dotenv MISE_CACHE_S3_PATH_STYLE true
-  write_dotenv MISE_CACHE_OIDC_PROVIDERS_JSON "$oidc_providers"
-  write_dotenv MISE_CACHE_ALLOW_ANONYMOUS false
+  write_dotenv MBX_CACHE_STORAGE s3
+  write_dotenv MBX_CACHE_DATABASE_URL \
+    "postgres://mbx_cache:$MBX_CACHE_DATABASE_PASSWORD@postgres/mbx_cache"
+  write_dotenv MBX_CACHE_S3_BUCKET "$r2_bucket"
+  write_dotenv MBX_CACHE_S3_PREFIX v1
+  write_dotenv MBX_CACHE_S3_ENDPOINT "$r2_endpoint"
+  write_dotenv MBX_CACHE_S3_REGION auto
+  write_dotenv MBX_CACHE_S3_PATH_STYLE true
+  write_dotenv MBX_CACHE_OIDC_PROVIDERS_JSON "$oidc_providers"
+  write_dotenv MBX_CACHE_ALLOW_ANONYMOUS false
   write_dotenv AWS_ACCESS_KEY_ID "$R2_ACCESS_KEY_ID"
   write_dotenv AWS_SECRET_ACCESS_KEY "$R2_SECRET_ACCESS_KEY"
 } >"$project_dir/runtime/cache.env"
@@ -264,5 +264,5 @@ if [[ $dry_run == false ]]; then
     --show-error \
     --silent \
     "$cache_url/v1/status" >/dev/null
-  echo "mise-cache is healthy at $cache_url"
+  echo "mbx-cache is healthy at $cache_url"
 fi
