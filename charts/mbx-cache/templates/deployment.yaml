@@ -11,7 +11,7 @@ spec:
       labels: {app.kubernetes.io/name: mbx-cache, app.kubernetes.io/instance: {{ .Release.Name }}}
       annotations: {{ toYaml .Values.podAnnotations | nindent 8 }}
     spec:
-      serviceAccountName: {{ default (printf "%s-mbx-cache" .Release.Name) .Values.serviceAccount.name }}
+      serviceAccountName: {{ include "mbx-cache.serviceAccountName" . }}
       securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
       containers:
         - name: mbx-cache

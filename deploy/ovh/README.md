@@ -43,7 +43,7 @@ and plan availability before applying the configuration.
 - a current OVH US VPS plan code and Ubuntu image ID only when ordering a VPS
 - an existing R2 bucket and Object Read & Write token restricted to that bucket
 - a DNS-only Cloudflare A record for the public cache hostname
-- a published, immutable mbx-cache image tag or digest
+- a published mbx-cache image digest (`…@sha256:<64 hex>`; `deploy.sh` rejects a tag)
 
 Set `TERRAFORM_COMMAND=tofu` when using OpenTofu for the deploy step.
 
@@ -149,8 +149,11 @@ local project on success or failure. The caller's other environment variables
 are never forwarded.
 
 Automated deployments store `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and
-`MBX_CACHE_DATABASE_PASSWORD` in the repository's protected `production`
-GitHub Environment. Environment protection keeps these values out of ordinary
+the database password in the repository's protected `production` GitHub
+Environment. That last secret is still named `MISE_CACHE_DATABASE_PASSWORD`:
+it cannot easily be recreated, so the rebrand left it alone and the workflow
+maps it onto `MBX_CACHE_DATABASE_PASSWORD`. Renaming the reference without
+renaming the secret is what broke the first deploy after the rebrand. Environment protection keeps these values out of ordinary
 pull-request jobs. The R2 credential remains limited by its Cloudflare bucket
 policy even if a workflow is compromised. Use a local password manager to
 populate the same variables for an emergency operator-run deployment; never
