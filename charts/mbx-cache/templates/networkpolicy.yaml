@@ -2,10 +2,10 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ .Release.Name }}-mise-cache
+  name: {{ .Release.Name }}-mbx-cache
 spec:
   podSelector:
-    matchLabels: {app.kubernetes.io/name: mise-cache, app.kubernetes.io/instance: {{ .Release.Name }}}
+    matchLabels: {app.kubernetes.io/name: mbx-cache, app.kubernetes.io/instance: {{ .Release.Name }}}
   policyTypes: [Ingress]
   ingress:
     - ports: [{port: 8080, protocol: TCP}]

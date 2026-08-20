@@ -155,18 +155,18 @@ impl Authorizer {
 
     pub async fn authorize(&self, headers: &HeaderMap, access: Access) -> Result<String, ApiError> {
         if headers
-            .get("mise-cache-protocol")
+            .get("mbx-cache-protocol")
             .and_then(|value| value.to_str().ok())
             != Some("1")
         {
             return Err(ApiError::upgrade_required());
         }
         let namespace = headers
-            .get("mise-cache-namespace")
+            .get("mbx-cache-namespace")
             .and_then(|value| value.to_str().ok())
             .filter(|value| valid_namespace(value))
             .ok_or_else(|| {
-                ApiError::bad_request("a valid Mise-Cache-Namespace header is required")
+                ApiError::bad_request("a valid Mbx-Cache-Namespace header is required")
             })?;
 
         if self.allow_anonymous && self.grants.is_empty() && self.oidc.is_empty() {
@@ -802,8 +802,8 @@ mod tests {
 
     fn request_headers(token: &str, namespace: &str) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert("mise-cache-protocol", "1".parse().unwrap());
-        headers.insert("mise-cache-namespace", namespace.parse().unwrap());
+        headers.insert("mbx-cache-protocol", "1".parse().unwrap());
+        headers.insert("mbx-cache-namespace", namespace.parse().unwrap());
         headers.insert(
             axum::http::header::AUTHORIZATION,
             format!("Bearer {token}").parse().unwrap(),

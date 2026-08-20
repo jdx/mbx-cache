@@ -1,7 +1,7 @@
 variable "name" {
   description = "Display name for the VPS."
   type        = string
-  default     = "mise-cache"
+  default     = "mbx-cache"
 }
 
 variable "domain" {

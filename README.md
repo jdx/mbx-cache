@@ -1,6 +1,8 @@
-# mise-cache
+# mbx-cache
 
-`mise-cache` is the official self-hostable remote build-cache service for mise. It implements version 1 of the mise action-cache protocol with immutable blobs, atomic action-result commits, namespace isolation, typed action schemas, and streaming transfers.
+`mbx-cache` is the self-hostable remote build-cache server for [mbx](https://github.com/jdx/mr-boxington). It implements version 1 of the mbx action-cache protocol with immutable blobs, atomic action-result commits, namespace isolation, typed action schemas, and streaming transfers.
+
+> This project is experimental and is not intended for others to use yet.
 
 ## Features
 
@@ -19,7 +21,7 @@
 Install the service from crates.io:
 
 ```sh
-cargo install mise-cache
+cargo install mbx-cache
 ```
 
 The development stack starts the service, PostgreSQL, and MinIO:
@@ -43,29 +45,29 @@ Anonymous access is intended only for a trusted local network. Production instal
 
 ## Configuration
 
-Every option has a matching environment variable and CLI flag. Run `mise-cache --help` for the complete list.
+Every option has a matching environment variable and CLI flag. Run `mbx-cache --help` for the complete list.
 
 | Environment variable | Default | Purpose |
 |---|---:|---|
-| `MISE_CACHE_LISTEN` | `0.0.0.0:8080` | Listen address |
-| `MISE_CACHE_STORAGE` | `filesystem` | `filesystem` or `s3` |
-| `MISE_CACHE_DATA_DIR` | `/var/lib/mise-cache` | Filesystem blob root |
-| `MISE_CACHE_DATABASE_URL` | `memory://` | PostgreSQL URL or development memory store |
-| `MISE_CACHE_S3_BUCKET` | — | Required for S3 storage |
-| `MISE_CACHE_S3_PREFIX` | `v1` | Object-key prefix |
-| `MISE_CACHE_S3_ENDPOINT` | AWS default | S3-compatible endpoint |
-| `MISE_CACHE_S3_REGION` | `us-east-1` | S3 region |
-| `MISE_CACHE_S3_PATH_STYLE` | `false` | Enable for MinIO and similar services |
-| `MISE_CACHE_TOKENS_JSON` | — | Token grants, described below |
-| `MISE_CACHE_OIDC_PROVIDERS_JSON` | — | Trusted OIDC providers and claim grants, described below |
-| `MISE_CACHE_ALLOW_ANONYMOUS` | `false` | Allow access without configured grants |
-| `MISE_CACHE_MAX_BLOB_BYTES` | `5368709120` | Maximum upload size |
+| `MBX_CACHE_LISTEN` | `0.0.0.0:8080` | Listen address |
+| `MBX_CACHE_STORAGE` | `filesystem` | `filesystem` or `s3` |
+| `MBX_CACHE_DATA_DIR` | `/var/lib/mbx-cache` | Filesystem blob root |
+| `MBX_CACHE_DATABASE_URL` | `memory://` | PostgreSQL URL or development memory store |
+| `MBX_CACHE_S3_BUCKET` | — | Required for S3 storage |
+| `MBX_CACHE_S3_PREFIX` | `v1` | Object-key prefix |
+| `MBX_CACHE_S3_ENDPOINT` | AWS default | S3-compatible endpoint |
+| `MBX_CACHE_S3_REGION` | `us-east-1` | S3 region |
+| `MBX_CACHE_S3_PATH_STYLE` | `false` | Enable for MinIO and similar services |
+| `MBX_CACHE_TOKENS_JSON` | — | Token grants, described below |
+| `MBX_CACHE_OIDC_PROVIDERS_JSON` | — | Trusted OIDC providers and claim grants, described below |
+| `MBX_CACHE_ALLOW_ANONYMOUS` | `false` | Allow access without configured grants |
+| `MBX_CACHE_MAX_BLOB_BYTES` | `5368709120` | Maximum upload size |
 
 AWS credentials use the standard AWS SDK credential chain, including environment variables, workload identity, ECS, and EC2 roles.
 
 ### Authorization
 
-`MISE_CACHE_TOKENS_JSON` is an array of grants. Namespace patterns may be an exact name, `*`, or a prefix ending in `/*`.
+`MBX_CACHE_TOKENS_JSON` is an array of grants. Namespace patterns may be an exact name, `*`, or a prefix ending in `/*`.
 
 ```json
 [
@@ -79,7 +81,7 @@ AWS credentials use the standard AWS SDK credential chain, including environment
 
 Rotate tokens by deploying the old and new grants together, moving clients to the new token, and then removing the old grant. Do not put the JSON directly in a Helm values file; inject it through a Kubernetes Secret.
 
-OIDC lets CI systems use short-lived identity tokens instead of stored cache secrets. Configure trusted issuers, acceptable audiences, and one or more claim-based grants with `MISE_CACHE_OIDC_PROVIDERS_JSON`:
+OIDC lets CI systems use short-lived identity tokens instead of stored cache secrets. Configure trusted issuers, acceptable audiences, and one or more claim-based grants with `MBX_CACHE_OIDC_PROVIDERS_JSON`:
 
 ```json
 [
@@ -148,14 +150,14 @@ Treat the output as a secret even though it is short-lived. Set the audience in 
 ## Deployment
 
 - `docker-compose.yml` runs a local development stack with PostgreSQL and MinIO.
-- `charts/mise-cache` runs a horizontally scalable Kubernetes deployment.
+- `charts/mbx-cache` runs a horizontally scalable Kubernetes deployment.
 - [`deploy/ovh`](deploy/ovh/README.md) provisions a low-cost US production
   instance with Terraform and converges its host with `mise bootstrap remote`.
   Cache blobs use Cloudflare R2.
 
 ## API
 
-All cache requests send `Mise-Cache-Namespace` and, unless anonymous access is enabled, `Authorization: Bearer …`.
+All cache requests send `Mbx-Cache-Namespace` and, unless anonymous access is enabled, `Authorization: Bearer …`.
 
 - `GET /v1/status`
 - `GET /v1/capabilities`
@@ -170,7 +172,7 @@ Blobs and action results are immutable. Repeating an identical write is idempote
 
 Task action manifests are mutable discovery indexes for fresh workers. Their stable key is the BLAKE3 digest of the canonical task-manifest selector. Writes use optimistic concurrency: create with `If-None-Match: *`, or update the ETag returned by `GET` with `If-Match`. A stale update returns `412 Precondition Failed`, so clients must read, merge, and retry without dropping actions learned by another worker.
 
-Servers advertising `features.blob_packs` accept the same digest-list JSON as `blobs:missing` at `POST /v1/blobs:pack`. The response media type is `application/vnd.mise.cache-blob-pack.v1`. It begins with the eight-byte `MISEPK01` magic and then streams visible blobs in request order. Each blob is framed by a one-byte algorithm (`1` for BLAKE3, `2` for SHA-256), its raw 32-byte hash, an unsigned big-endian 64-bit size, and exactly that many content bytes. Missing or unauthorized blobs are omitted, duplicate requests are emitted once, and clients must verify every digest before admitting content to local CAS. The response includes `Content-Length` for the exact framed response size, `mise-cache-pack-blobs` for the visible blob count, and `mise-cache-pack-bytes` for visible blob payload bytes excluding magic and framing. The aggregate declared size is bounded by `MISE_CACHE_MAX_BLOB_BYTES` and advertised as `limits.max_pack_bytes`.
+Servers advertising `features.blob_packs` accept the same digest-list JSON as `blobs:missing` at `POST /v1/blobs:pack`. The response media type is `application/vnd.mbx.cache-blob-pack.v1`. It begins with the eight-byte `MBXPACK1` magic and then streams visible blobs in request order. Each blob is framed by a one-byte algorithm (`1` for BLAKE3, `2` for SHA-256), its raw 32-byte hash, an unsigned big-endian 64-bit size, and exactly that many content bytes. Missing or unauthorized blobs are omitted, duplicate requests are emitted once, and clients must verify every digest before admitting content to local CAS. The response includes `Content-Length` for the exact framed response size, `mbx-cache-pack-blobs` for the visible blob count, and `mbx-cache-pack-bytes` for visible blob payload bytes excluding magic and framing. The aggregate declared size is bounded by `MBX_CACHE_MAX_BLOB_BYTES` and advertised as `limits.max_pack_bytes`.
 
 `GET /v1/capabilities` advertises the action kinds and exact schema versions accepted by the server. Action-result keys use BLAKE3. Version 1 accepts task and rustc action and metadata schema version 1. Rustc results require an output directory tree plus metadata referencing raw stdout and stderr blobs so clients can replay compiler diagnostics byte-for-byte.
 

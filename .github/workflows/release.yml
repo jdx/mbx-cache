@@ -30,7 +30,7 @@ permissions: {}
 jobs:
   prepare:
     name: Prepare container image
-    if: github.repository == 'jdx/mise-cache'
+    if: github.repository == 'jdx/mbx-cache'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -79,7 +79,7 @@ jobs:
       - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         id: meta
         with:
-          images: ghcr.io/jdx/mise-cache
+          images: ghcr.io/jdx/mbx-cache
           flavor: latest=false
           tags: |
             type=raw,value=sha-${{ needs.prepare.outputs.sha }}
@@ -87,11 +87,11 @@ jobs:
         id: push
         with:
           context: .
-          build-args: MISE_CACHE_BUILD_REVISION=${{ needs.prepare.outputs.sha }}
+          build-args: MBX_CACHE_BUILD_REVISION=${{ needs.prepare.outputs.sha }}
           push: true
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=ghcr.io/jdx/mise-cache,push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=ghcr.io/jdx/mbx-cache,push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=image-${{ matrix.artifact }}
           cache-to: type=gha,mode=max,scope=image-${{ matrix.artifact }}
           provenance: mode=max
@@ -138,7 +138,7 @@ jobs:
       - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         id: meta
         with:
-          images: ghcr.io/jdx/mise-cache
+          images: ghcr.io/jdx/mbx-cache
           flavor: latest=false
           tags: |
             type=raw,value=sha-${{ needs.prepare.outputs.sha }}
@@ -147,7 +147,7 @@ jobs:
       - name: Create multi-platform manifest
         id: manifest
         env:
-          REGISTRY_IMAGE: ghcr.io/jdx/mise-cache
+          REGISTRY_IMAGE: ghcr.io/jdx/mbx-cache
           SOURCE_SHA: ${{ needs.prepare.outputs.sha }}
           TAGS: ${{ steps.meta.outputs.tags }}
         working-directory: /tmp/digests
@@ -197,9 +197,9 @@ jobs:
           latest_sha=$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)
           if [ "$SOURCE_SHA" = "$latest_sha" ]; then
             docker buildx imagetools create \
-              --tag ghcr.io/jdx/mise-cache:main \
-              "ghcr.io/jdx/mise-cache@$DIGEST"
-            echo "Promoted $SOURCE_SHA to ghcr.io/jdx/mise-cache:main" >> "$GITHUB_STEP_SUMMARY"
+              --tag ghcr.io/jdx/mbx-cache:main \
+              "ghcr.io/jdx/mbx-cache@$DIGEST"
+            echo "Promoted $SOURCE_SHA to ghcr.io/jdx/mbx-cache:main" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "Skipped main promotion because $SOURCE_SHA is no longer the head of main." >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -207,7 +207,7 @@ jobs:
         env:
           DIGEST: ${{ steps.manifest.outputs.digest }}
         run: |
-          image="ghcr.io/jdx/mise-cache@$DIGEST"
+          image="ghcr.io/jdx/mbx-cache@$DIGEST"
           printf '%s\n' "$image" | tee container-image.txt
           printf '### Container image\n\n%s\n' "$image" >> "$GITHUB_STEP_SUMMARY"
       - name: Attach image reference to release

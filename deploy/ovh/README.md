@@ -1,6 +1,6 @@
 # OVH US deployment
 
-This deployment runs Caddy, mise-cache, and PostgreSQL on one OVHcloud VPS in
+This deployment runs Caddy, mbx-cache, and PostgreSQL on one OVHcloud VPS in
 Vint Hill, Virginia. Cache blobs live in a manually created Cloudflare R2
 bucket. The server is disposable; PostgreSQL is small and the much larger blob
 store remains outside the server.
@@ -11,12 +11,12 @@ Terraform records or provisions the server:
   monthly OVH US VPS in `US-EAST-VA`.
 
 The R2 bucket and DNS record are deliberately created in Cloudflare by an
-operator. Terraform therefore needs no Cloudflare API token, and mise-cache can
+operator. Terraform therefore needs no Cloudflare API token, and mbx-cache can
 use an Object Read & Write token scoped to only its bucket.
 
 [`mise bootstrap remote`](https://mise.jdx.dev/bootstrap/remote.html) installs
 and converges the host firewall, fail2ban, automatic security updates, Docker,
-Caddy, PostgreSQL, and mise-cache. Runtime secrets are copied only through a
+Caddy, PostgreSQL, and mbx-cache. Runtime secrets are copied only through a
 protected temporary bootstrap project; they do not enter Terraform state, mise
 configuration, Git, or OVH installation metadata.
 
@@ -43,7 +43,7 @@ and plan availability before applying the configuration.
 - a current OVH US VPS plan code and Ubuntu image ID only when ordering a VPS
 - an existing R2 bucket and Object Read & Write token restricted to that bucket
 - a DNS-only Cloudflare A record for the public cache hostname
-- a published, immutable mise-cache image tag or digest
+- a published, immutable mbx-cache image tag or digest
 
 Set `TERRAFORM_COMMAND=tofu` when using OpenTofu for the deploy step.
 
@@ -104,7 +104,7 @@ no managed infrastructure resources.
 
 ## Create R2 storage and DNS
 
-Create the `mise-cache-production` R2 bucket with Standard storage in Eastern
+Create the `mbx-cache-production` R2 bucket with Standard storage in Eastern
 North America, then create an R2 API token with Object Read & Write permission
 scoped only to that bucket. Save its Access Key ID and Secret Access Key;
 Cloudflare displays the secret only once.
@@ -116,15 +116,15 @@ on the VPS.
 
 ## Deploy the service
 
-Pin `MISE_CACHE_IMAGE` by digest so a deployment cannot silently select changed
+Pin `MBX_CACHE_IMAGE` by digest so a deployment cannot silently select changed
 image content:
 
 ```sh
-export MISE_CACHE_IMAGE=ghcr.io/jdx/mise-cache@sha256:<64-hex-digit-digest>
-export MISE_CACHE_DATABASE_PASSWORD="$(openssl rand -hex 24)"
+export MBX_CACHE_IMAGE=ghcr.io/jdx/mbx-cache@sha256:<64-hex-digit-digest>
+export MBX_CACHE_DATABASE_PASSWORD="$(openssl rand -hex 24)"
 export R2_ACCESS_KEY_ID=...
 export R2_SECRET_ACCESS_KEY=...
-export OVH_SSH_HOST="mise-cache-prod.example-tailnet.ts.net"
+export OVH_SSH_HOST="mbx-cache-prod.example-tailnet.ts.net"
 export OVH_SSH_SOURCE_CIDR="$(tailscale ip -4)/32"
 ./deploy/ovh/deploy.sh
 ```
@@ -149,7 +149,7 @@ local project on success or failure. The caller's other environment variables
 are never forwarded.
 
 Automated deployments store `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and
-`MISE_CACHE_DATABASE_PASSWORD` in the repository's protected `production`
+`MBX_CACHE_DATABASE_PASSWORD` in the repository's protected `production`
 GitHub Environment. Environment protection keeps these values out of ordinary
 pull-request jobs. The R2 credential remains limited by its Cloudflare bucket
 policy even if a workflow is compromised. Use a local password manager to
@@ -179,17 +179,17 @@ GitHub OIDC is configured with these server-enforced grants:
 - tag workflows for listed repositories: read-only;
 - pull-request workflows for listed repositories: read-only;
 - other push workflows for listed repositories: read-only; and
-- the exact `jdx/mise-cache` production deployment workflow: read/write for
+- the exact `jdx/mbx-cache` production deployment workflow: read/write for
   its isolated qualification namespace.
 
 Each trusted repository is paired with GitHub's stable numeric
 `repository_owner_id`; repository names must be unique. Edit the checked-in
 file to change the production allowlist, or set
-`MISE_CACHE_GITHUB_REPOSITORIES_FILE` to a different JSON file for another
+`MBX_CACHE_GITHUB_REPOSITORIES_FILE` to a different JSON file for another
 installation. Override
-`MISE_CACHE_DEPLOY_GITHUB_REPOSITORY` and
-`MISE_CACHE_DEPLOY_GITHUB_OWNER_ID`, and
-`MISE_CACHE_DEPLOY_GITHUB_WORKFLOW_REF` together when deployment is managed by
+`MBX_CACHE_DEPLOY_GITHUB_REPOSITORY` and
+`MBX_CACHE_DEPLOY_GITHUB_OWNER_ID`, and
+`MBX_CACHE_DEPLOY_GITHUB_WORKFLOW_REF` together when deployment is managed by
 another repository owner or workflow.
 
 ## Verify and operate
@@ -197,7 +197,7 @@ another repository owner or workflow.
 ```sh
 curl --fail "$(terraform -chdir=deploy/ovh/terraform output -raw cache_url)/v1/status"
 ssh ubuntu@"$OVH_SSH_HOST" \
-  'cd /opt/mise-cache && sudo docker compose ps'
+  'cd /opt/mbx-cache && sudo docker compose ps'
 ```
 
 The desired host state lives in `deploy/ovh/bootstrap/mise.toml`. Re-running
@@ -215,7 +215,7 @@ provisioned dashboard through an SSH tunnel:
 ssh -N -L 3000:127.0.0.1:3000 ubuntu@"$OVH_SSH_HOST"
 ```
 
-Then visit `http://127.0.0.1:3000/d/mise-cache/mise-cache`. Grafana has no
+Then visit `http://127.0.0.1:3000/d/mbx-cache/mbx-cache`. Grafana has no
 local administrator or editor account; anonymous access is read-only and is
 reachable only through the loopback-bound port. Dashboard and datasource
 changes belong in `deploy/ovh/bootstrap/monitoring` and are applied by the next

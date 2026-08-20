@@ -25,11 +25,11 @@ use crate::{
     storage::{BlobStore, PutOutcome},
 };
 
-const BLOB_PACK_MEDIA_TYPE: &str = "application/vnd.mise.cache-blob-pack.v1";
-const BLOB_PACK_MAGIC: &[u8; 8] = b"MISEPK01";
+const BLOB_PACK_MEDIA_TYPE: &str = "application/vnd.mbx.cache-blob-pack.v1";
+const BLOB_PACK_MAGIC: &[u8; 8] = b"MBXPACK1";
 const BLOB_PACK_HEADER_BYTES: usize = 1 + 32 + 8;
-const PACK_BLOBS_HEADER: &str = "mise-cache-pack-blobs";
-const PACK_BYTES_HEADER: &str = "mise-cache-pack-bytes";
+const PACK_BLOBS_HEADER: &str = "mbx-cache-pack-blobs";
+const PACK_BYTES_HEADER: &str = "mbx-cache-pack-bytes";
 const MAX_BATCH_ITEMS: usize = 10_000;
 const MAX_PACK_STORAGE_READS: usize = 16;
 
@@ -505,7 +505,7 @@ async fn get_action_manifest(
         .status(StatusCode::OK)
         .header(
             header::CONTENT_TYPE,
-            "application/vnd.mise.cache-task-action-manifest.v1+json",
+            "application/vnd.mbx.cache-task-action-manifest.v1+json",
         )
         .header(header::ETAG, quoted_etag(&record.etag))
         .body(Body::from(body))
@@ -1012,7 +1012,7 @@ impl ApiError {
     pub fn upgrade_required() -> Self {
         Self {
             status: StatusCode::UPGRADE_REQUIRED,
-            message: "mise cache protocol version 1 is required".into(),
+            message: "mbx cache protocol version 1 is required".into(),
             advertise_protocol: true,
         }
     }
@@ -1029,7 +1029,7 @@ impl IntoResponse for ApiError {
         if self.advertise_protocol {
             response
                 .headers_mut()
-                .insert("mise-cache-protocol", header::HeaderValue::from_static("1"));
+                .insert("mbx-cache-protocol", header::HeaderValue::from_static("1"));
         }
         response
     }
@@ -1057,8 +1057,8 @@ mod tests {
         axum::http::Request::builder()
             .method(method)
             .uri(uri)
-            .header("mise-cache-protocol", "1")
-            .header("mise-cache-namespace", "test/project")
+            .header("mbx-cache-protocol", "1")
+            .header("mbx-cache-namespace", "test/project")
             .header(header::IF_NONE_MATCH, "*")
             .header(header::CONTENT_TYPE, "application/json")
             .body(body)
@@ -1380,32 +1380,30 @@ mod tests {
             headers.get(header::CONTENT_TYPE).unwrap(),
             "application/openmetrics-text; version=1.0.0; charset=utf-8"
         );
-        assert!(metrics.contains("mise_cache_build_info{"));
-        assert!(metrics.contains("mise_cache_blob_hits_total 1"));
-        assert!(metrics.contains("mise_cache_blob_uploads_total 1"));
-        assert!(metrics.contains("mise_cache_pack_requests_total{outcome=\"completed\"} 1"));
-        assert!(metrics.contains("mise_cache_pack_in_flight 0"));
-        assert!(metrics.contains("mise_cache_pack_blobs_total{kind=\"requested\"} 2"));
-        assert!(metrics.contains("mise_cache_pack_blobs_total{kind=\"served\"} 1"));
-        assert!(metrics.contains("mise_cache_pack_blobs_total{kind=\"missing\"} 1"));
+        assert!(metrics.contains("mbx_cache_build_info{"));
+        assert!(metrics.contains("mbx_cache_blob_hits_total 1"));
+        assert!(metrics.contains("mbx_cache_blob_uploads_total 1"));
+        assert!(metrics.contains("mbx_cache_pack_requests_total{outcome=\"completed\"} 1"));
+        assert!(metrics.contains("mbx_cache_pack_in_flight 0"));
+        assert!(metrics.contains("mbx_cache_pack_blobs_total{kind=\"requested\"} 2"));
+        assert!(metrics.contains("mbx_cache_pack_blobs_total{kind=\"served\"} 1"));
+        assert!(metrics.contains("mbx_cache_pack_blobs_total{kind=\"missing\"} 1"));
         assert!(metrics.contains(&format!(
-            "mise_cache_pack_bytes_total{{kind=\"requested\"}} {requested_bytes}"
+            "mbx_cache_pack_bytes_total{{kind=\"requested\"}} {requested_bytes}"
         )));
         assert!(metrics.contains(&format!(
-            "mise_cache_pack_bytes_total{{kind=\"served\"}} {}",
+            "mbx_cache_pack_bytes_total{{kind=\"served\"}} {}",
             stored.size
         )));
-        assert!(
-            metrics.contains("mise_cache_pack_duration_seconds_count{outcome=\"completed\"} 1")
-        );
-        assert!(metrics.contains("mise_cache_pack_time_to_first_byte_seconds_count 1"));
+        assert!(metrics.contains("mbx_cache_pack_duration_seconds_count{outcome=\"completed\"} 1"));
+        assert!(metrics.contains("mbx_cache_pack_time_to_first_byte_seconds_count 1"));
         assert!(metrics.contains(
-            "mise_cache_pack_metadata_query_duration_seconds_count{outcome=\"success\"} 1"
+            "mbx_cache_pack_metadata_query_duration_seconds_count{outcome=\"success\"} 1"
         ));
-        assert!(metrics.contains("mise_cache_pack_storage_gets_total{outcome=\"hit\"} 1"));
+        assert!(metrics.contains("mbx_cache_pack_storage_gets_total{outcome=\"hit\"} 1"));
         assert!(
             metrics
-                .contains("mise_cache_pack_storage_get_duration_seconds_count{outcome=\"hit\"} 1")
+                .contains("mbx_cache_pack_storage_get_duration_seconds_count{outcome=\"hit\"} 1")
         );
     }
 
@@ -1423,11 +1421,9 @@ mod tests {
         drop(response);
 
         let (_, metrics) = scrape_metrics(&app).await;
-        assert!(metrics.contains("mise_cache_pack_requests_total{outcome=\"cancelled\"} 1"));
-        assert!(
-            metrics.contains("mise_cache_pack_duration_seconds_count{outcome=\"cancelled\"} 1")
-        );
-        assert!(metrics.contains("mise_cache_pack_in_flight 0"));
+        assert!(metrics.contains("mbx_cache_pack_requests_total{outcome=\"cancelled\"} 1"));
+        assert!(metrics.contains("mbx_cache_pack_duration_seconds_count{outcome=\"cancelled\"} 1"));
+        assert!(metrics.contains("mbx_cache_pack_in_flight 0"));
     }
 
     #[tokio::test]
@@ -1437,7 +1433,7 @@ mod tests {
         let body = serde_json::to_vec(&serde_json::json!({"digests":[stored]})).unwrap();
         let mut request = request("POST", "/v1/blobs:pack".into(), Body::from(body));
         request.headers_mut().insert(
-            "mise-cache-namespace",
+            "mbx-cache-namespace",
             header::HeaderValue::from_static("other/project"),
         );
         let response = app.oneshot(request).await.unwrap();

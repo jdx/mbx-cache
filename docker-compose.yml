@@ -2,14 +2,14 @@ services:
   cache:
     build: .
     environment:
-      MISE_CACHE_STORAGE: s3
-      MISE_CACHE_DATABASE_URL: postgres://mise_cache:mise_cache@postgres/mise_cache
-      MISE_CACHE_S3_BUCKET: mise-cache
-      MISE_CACHE_S3_ENDPOINT: http://minio:9000
-      MISE_CACHE_S3_PATH_STYLE: "true"
-      AWS_ACCESS_KEY_ID: mise-cache
-      AWS_SECRET_ACCESS_KEY: mise-cache-development
-      MISE_CACHE_TOKENS_JSON: '[{"token":"development-token","read":["default"],"write":["default"]}]'
+      MBX_CACHE_STORAGE: s3
+      MBX_CACHE_DATABASE_URL: postgres://mbx_cache:mbx_cache@postgres/mbx_cache
+      MBX_CACHE_S3_BUCKET: mbx-cache
+      MBX_CACHE_S3_ENDPOINT: http://minio:9000
+      MBX_CACHE_S3_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: mbx-cache
+      AWS_SECRET_ACCESS_KEY: mbx-cache-development
+      MBX_CACHE_TOKENS_JSON: '[{"token":"development-token","read":["default"],"write":["default"]}]'
     ports: ["8080:8080"]
     depends_on:
       postgres: {condition: service_healthy}
@@ -17,12 +17,12 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_USER: mise_cache
-      POSTGRES_PASSWORD: mise_cache
-      POSTGRES_DB: mise_cache
+      POSTGRES_USER: mbx_cache
+      POSTGRES_PASSWORD: mbx_cache
+      POSTGRES_DB: mbx_cache
     volumes: ["postgres:/var/lib/postgresql/data"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mise_cache"]
+      test: ["CMD-SHELL", "pg_isready -U mbx_cache"]
       interval: 2s
       timeout: 2s
       retries: 20
@@ -30,8 +30,8 @@ services:
     image: quay.io/minio/minio:latest
     command: server /data
     environment:
-      MINIO_ROOT_USER: mise-cache
-      MINIO_ROOT_PASSWORD: mise-cache-development
+      MINIO_ROOT_USER: mbx-cache
+      MINIO_ROOT_PASSWORD: mbx-cache-development
     volumes: ["objects:/data"]
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
@@ -43,7 +43,7 @@ services:
     depends_on:
       minio: {condition: service_healthy}
     entrypoint: ["/bin/sh", "-c"]
-    command: ["mc alias set local http://minio:9000 mise-cache mise-cache-development && mc mb --ignore-existing local/mise-cache"]
+    command: ["mc alias set local http://minio:9000 mbx-cache mbx-cache-development && mc mb --ignore-existing local/mbx-cache"]
 volumes:
   postgres: {}
   objects: {}

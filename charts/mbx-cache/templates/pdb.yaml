@@ -2,10 +2,10 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: {{ .Release.Name }}-mise-cache
+  name: {{ .Release.Name }}-mbx-cache
 spec:
   minAvailable: 1
   selector:
-    matchLabels: {app.kubernetes.io/name: mise-cache, app.kubernetes.io/instance: {{ .Release.Name }}}
+    matchLabels: {app.kubernetes.io/name: mbx-cache, app.kubernetes.io/instance: {{ .Release.Name }}}
 {{- end }}
 

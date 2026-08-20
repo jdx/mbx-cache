@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   merge:
-    if: github.repository == 'jdx/mise-cache'
+    if: github.repository == 'jdx/mbx-cache'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -55,7 +55,7 @@ jobs:
           fi
 
           pr_number=$(gh pr list \
-            --repo jdx/mise-cache \
+            --repo jdx/mbx-cache \
             --base main \
             --state open \
             --limit 100 \
@@ -66,11 +66,11 @@ jobs:
             exit 0
           fi
 
-          body=$(gh pr view "$pr_number" --repo jdx/mise-cache --json body --jq '.body // ""')
+          body=$(gh pr view "$pr_number" --repo jdx/mbx-cache --json body --jq '.body // ""')
           if [ -z "$(tr -d '[:space:]' <<<"$body")" ]; then
             echo "Release PR #${pr_number} has an empty body; retrying later"
             exit 0
           fi
 
           echo "Release PR #${pr_number} is ready for the release window"
-          gh pr merge "$pr_number" --repo jdx/mise-cache --squash --auto
+          gh pr merge "$pr_number" --repo jdx/mbx-cache --squash --auto

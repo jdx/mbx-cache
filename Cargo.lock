@@ -1791,6 +1791,41 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
+name = "mbx-cache"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-s3",
+ "axum",
+ "base64",
+ "blake3",
+ "clap",
+ "futures-util",
+ "hex",
+ "http 1.5.0",
+ "http-body-util",
+ "jsonwebtoken",
+ "prometheus-client",
+ "reqwest",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1831,41 +1866,6 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "mise-cache"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "async-stream",
- "async-trait",
- "aws-config",
- "aws-sdk-s3",
- "axum",
- "base64",
- "blake3",
- "clap",
- "futures-util",
- "hex",
- "http 1.5.0",
- "http-body-util",
- "jsonwebtoken",
- "prometheus-client",
- "reqwest",
- "rsa",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

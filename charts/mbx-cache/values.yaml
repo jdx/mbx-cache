@@ -1,6 +1,6 @@
 replicaCount: 2
 image:
-  repository: ghcr.io/jdx/mise-cache
+  repository: ghcr.io/jdx/mbx-cache
   tag: latest
   pullPolicy: IfNotPresent
 service:
@@ -18,7 +18,7 @@ config:
   s3PathStyle: false
   maxBlobBytes: "5368709120"
 secret:
-  existingSecret: mise-cache
+  existingSecret: mbx-cache
   tokensKey: tokens-json
   oidcProvidersKey: oidc-providers-json
 serviceAccount:
