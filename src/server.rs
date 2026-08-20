@@ -28,6 +28,8 @@ use crate::{
 const BLOB_PACK_MEDIA_TYPE: &str = "application/vnd.mise.cache-blob-pack.v1";
 const BLOB_PACK_MAGIC: &[u8; 8] = b"MISEPK01";
 const BLOB_PACK_HEADER_BYTES: usize = 1 + 32 + 8;
+const PACK_BLOBS_HEADER: &str = "mise-cache-pack-blobs";
+const PACK_BYTES_HEADER: &str = "mise-cache-pack-bytes";
 const MAX_BATCH_ITEMS: usize = 10_000;
 const MAX_PACK_STORAGE_READS: usize = 16;
 
@@ -289,31 +291,75 @@ async fn pack_blobs(
         total_bytes,
         missing_blobs,
     );
-    let mut entries = Vec::with_capacity(visible.len());
-    for digest in visible {
-        entries.push((pack_blob_header(&digest)?, digest));
-    }
+    let mut pack_bytes = BLOB_PACK_MAGIC.len() as u64;
+    let mut pack_payload_bytes = 0_u64;
     let store = state.blobs.clone();
     let metrics = state.metrics.clone();
+    let reads = stream::iter(visible.into_iter().map(|digest| {
+        let store = store.clone();
+        async move {
+            let size = match store.size(&digest).await {
+                Ok(Some(size)) => size,
+                Ok(None) => {
+                    return Err(ApiError::internal(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "visible blob is missing from storage",
+                    )));
+                }
+                Err(error) => {
+                    return Err(ApiError::internal(error));
+                }
+            };
+            if size != digest.size {
+                return Err(ApiError::internal(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stored blob size does not match its digest",
+                )));
+            }
+            Ok::<_, ApiError>((pack_blob_header(&digest)?, digest))
+        }
+    }));
+    let mut reads = reads.buffered(MAX_PACK_STORAGE_READS);
+    let mut entries = Vec::new();
+    while let Some(entry) = reads.next().await {
+        let (header, digest) = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                pack_guard.error();
+                return Err(error);
+            }
+        };
+        pack_payload_bytes = pack_payload_bytes
+            .checked_add(digest.size)
+            .ok_or_else(|| ApiError::too_large("blob pack is too large"))?;
+        pack_bytes = pack_bytes
+            .checked_add(BLOB_PACK_HEADER_BYTES as u64)
+            .and_then(|bytes| bytes.checked_add(digest.size))
+            .ok_or_else(|| ApiError::too_large("blob pack is too large"))?;
+        entries.push((header, digest));
+    }
+    drop(reads);
+    let pack_blobs = entries.len();
+    let stream_metrics = metrics.clone();
     let response_stream = async_stream::try_stream! {
         pack_guard.record_first_byte();
         yield Bytes::from_static(BLOB_PACK_MAGIC);
         let reads = stream::iter(entries.into_iter().map(|(header, digest)| {
             let store = store.clone();
-            let metrics = metrics.clone();
+            let stream_metrics = stream_metrics.clone();
             async move {
                 let started = Instant::now();
                 let blob = match store.get(&digest).await {
                     Ok(Some(blob)) => {
-                        metrics.observe_pack_storage_get("hit", started.elapsed());
+                        stream_metrics.observe_pack_storage_get("hit", started.elapsed());
                         blob
                     }
                     Ok(None) => {
-                        metrics.observe_pack_storage_get("missing", started.elapsed());
+                        stream_metrics.observe_pack_storage_get("missing", started.elapsed());
                         return Err(io::Error::new(io::ErrorKind::NotFound, "visible blob is missing from storage"));
                     }
                     Err(error) => {
-                        metrics.observe_pack_storage_get("error", started.elapsed());
+                        stream_metrics.observe_pack_storage_get("error", started.elapsed());
                         return Err(io::Error::other(error));
                     }
                 };
@@ -329,15 +375,28 @@ async fn pack_blobs(
                 pack_guard.error();
             })?;
             yield header;
+            let mut streamed = 0_u64;
             while let Some(chunk) = blob.stream.next().await {
                 let chunk = chunk.inspect_err(|_| {
                     pack_guard.error();
                 })?;
+                streamed = streamed.checked_add(chunk.len() as u64).ok_or_else(|| {
+                    pack_guard.error();
+                    io::Error::new(io::ErrorKind::InvalidData, "stored blob stream is too large")
+                })?;
+                if streamed > blob.size {
+                    pack_guard.error();
+                    Err(io::Error::new(io::ErrorKind::InvalidData, "stored blob stream is larger than advertised"))?;
+                }
                 pack_guard.add_served_bytes(chunk.len() as u64);
                 yield chunk;
             }
+            if streamed != blob.size {
+                pack_guard.error();
+                Err(io::Error::new(io::ErrorKind::InvalidData, "stored blob stream is shorter than advertised"))?;
+            }
             pack_guard.blob_served();
-            metrics.inc_blob_hit();
+            stream_metrics.inc_blob_hit();
         }
         pack_guard.complete();
     }
@@ -345,6 +404,9 @@ async fn pack_blobs(
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, BLOB_PACK_MEDIA_TYPE)
+        .header(header::CONTENT_LENGTH, pack_bytes)
+        .header(PACK_BLOBS_HEADER, pack_blobs.to_string())
+        .header(PACK_BYTES_HEADER, pack_payload_bytes.to_string())
         .body(Body::from_stream(response_stream))
         .map_err(ApiError::internal)
 }
@@ -1011,6 +1073,14 @@ mod tests {
         }
     }
 
+    fn blob_path(root: &std::path::Path, digest: &Digest) -> std::path::PathBuf {
+        root.join("blobs")
+            .join(digest.algorithm.to_string())
+            .join(&digest.hash[..2])
+            .join(&digest.hash)
+            .join(digest.size.to_string())
+    }
+
     fn decode_blob_pack(bytes: &[u8]) -> Vec<(Digest, Vec<u8>)> {
         assert!(bytes.starts_with(BLOB_PACK_MAGIC));
         let mut offset = BLOB_PACK_MAGIC.len();
@@ -1220,6 +1290,26 @@ mod tests {
             response.headers().get(header::CONTENT_TYPE).unwrap(),
             BLOB_PACK_MEDIA_TYPE
         );
+        assert_eq!(
+            response.headers().get(header::CONTENT_LENGTH).unwrap(),
+            &header::HeaderValue::from_str(
+                &(BLOB_PACK_MAGIC.len()
+                    + (BLOB_PACK_HEADER_BYTES * 2)
+                    + first_bytes.len()
+                    + second_bytes.len())
+                .to_string()
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            response.headers().get(PACK_BLOBS_HEADER).unwrap(),
+            &header::HeaderValue::from_static("2")
+        );
+        assert_eq!(
+            response.headers().get(PACK_BYTES_HEADER).unwrap(),
+            &header::HeaderValue::from_str(&(first_bytes.len() + second_bytes.len()).to_string())
+                .unwrap()
+        );
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
             decode_blob_pack(&bytes),
@@ -1228,6 +1318,43 @@ mod tests {
                 (first, first_bytes.to_vec())
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn rejects_blob_pack_when_storage_object_is_short() {
+        let (app, directory) = test_app().await;
+        let stored = upload_blob(&app, b"cached output").await;
+        tokio::fs::write(blob_path(directory.path(), &stored), b"short")
+            .await
+            .unwrap();
+        let body = serde_json::to_vec(&serde_json::json!({"digests":[stored]})).unwrap();
+
+        let response = app
+            .oneshot(request("POST", "/v1/blobs:pack".into(), Body::from(body)))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn rejects_blob_pack_when_storage_object_is_oversized() {
+        let (app, directory) = test_app().await;
+        let stored = upload_blob(&app, b"cached output").await;
+        tokio::fs::write(
+            blob_path(directory.path(), &stored),
+            b"cached output with extra bytes",
+        )
+        .await
+        .unwrap();
+        let body = serde_json::to_vec(&serde_json::json!({"digests":[stored]})).unwrap();
+
+        let response = app
+            .oneshot(request("POST", "/v1/blobs:pack".into(), Body::from(body)))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]
@@ -1315,6 +1442,18 @@ mod tests {
         );
         let response = app.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_LENGTH).unwrap(),
+            &header::HeaderValue::from_str(&BLOB_PACK_MAGIC.len().to_string()).unwrap()
+        );
+        assert_eq!(
+            response.headers().get(PACK_BLOBS_HEADER).unwrap(),
+            &header::HeaderValue::from_static("0")
+        );
+        assert_eq!(
+            response.headers().get(PACK_BYTES_HEADER).unwrap(),
+            &header::HeaderValue::from_static("0")
+        );
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(bytes.as_ref(), BLOB_PACK_MAGIC);
     }

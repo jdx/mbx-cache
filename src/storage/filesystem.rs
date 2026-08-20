@@ -30,14 +30,23 @@ impl FilesystemStore {
 
 #[async_trait]
 impl BlobStore for FilesystemStore {
+    async fn size(&self, digest: &Digest) -> anyhow::Result<Option<u64>> {
+        match tokio::fs::metadata(self.path(digest)).await {
+            Ok(metadata) => Ok(Some(metadata.len())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     async fn get(&self, digest: &Digest) -> anyhow::Result<Option<Blob>> {
         let file = match tokio::fs::File::open(self.path(digest)).await {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
+        let size = file.metadata().await?.len();
         Ok(Some(Blob {
-            size: digest.size,
+            size,
             stream: ReaderStream::new(file).boxed(),
         }))
     }
