@@ -56,6 +56,30 @@ jobs:
           install -m 0600 cache.env.example cache.env
           docker compose --env-file runtime.env.example config --quiet
           jq empty monitoring/grafana/dashboards/mbx-cache.json
+      - name: Validate the Helm chart
+        run: |
+          base=(--set config.databaseUrl=postgres://cache/cache --set config.s3Bucket=cache)
+          helm lint charts/mbx-cache "${base[@]}"
+
+          # The deployment must never name a ServiceAccount the chart did not
+          # create, or its pods stay unschedulable.
+          created() { awk '/^kind: ServiceAccount$/{f=1;next} f&&/^  name: /{print $2;exit}'; }
+          referenced() { awk '/serviceAccountName: /{print $2;exit}'; }
+          check() {
+            want_created=$1 want_referenced=$2
+            shift 2
+            rendered=$(helm template test charts/mbx-cache "${base[@]}" "$@")
+            got_created=$(printf '%s' "$rendered" | created)
+            got_referenced=$(printf '%s' "$rendered" | referenced)
+            if [[ "${got_created:-none}" != "$want_created" || "$got_referenced" != "$want_referenced" ]]; then
+              echo "::error::helm $*: created=${got_created:-none} (want $want_created), referenced=$got_referenced (want $want_referenced)"
+              exit 1
+            fi
+          }
+          check test-mbx-cache test-mbx-cache
+          check custom custom --set serviceAccount.name=custom
+          check none existing --set serviceAccount.create=false --set serviceAccount.name=existing
+          check none default --set serviceAccount.create=false
       - run: shellcheck deploy/ovh/deploy.sh deploy/ovh/test-deploy.sh
       - run: deploy/ovh/test-deploy.sh
   test:

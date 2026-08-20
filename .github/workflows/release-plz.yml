@@ -82,7 +82,9 @@ jobs:
     env:
       CACHE_URL: https://cache.mise.jdx.dev
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
-      MBX_CACHE_DATABASE_PASSWORD: ${{ secrets.MBX_CACHE_DATABASE_PASSWORD }}
+      # The stored secret keeps its original name; it cannot easily be
+      # recreated, so the rebrand deliberately did not rename it.
+      MBX_CACHE_DATABASE_PASSWORD: ${{ secrets.MISE_CACHE_DATABASE_PASSWORD }}
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
