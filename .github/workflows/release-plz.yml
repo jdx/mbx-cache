@@ -132,6 +132,7 @@ jobs:
       # that live in Tailscale, not in this repository. See "Names that predate
       # the rebrand" in deploy/ovh/README.md before changing either.
       - name: Join the deployment tailnet
+        id: tailnet
         uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8 # v4.1.3
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
@@ -143,11 +144,12 @@ jobs:
       # not match the claim GitHub actually sends, and that claim appears in no
       # log on either side. Print it rather than guessing at it.
       - name: Explain a failed tailnet join
-        if: failure()
+        if: failure() && steps.tailnet.conclusion == 'failure'
         env:
           TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
         run: |
           response=$(curl --fail --silent --show-error \
+            --connect-timeout 5 --max-time 15 \
             --get --data-urlencode "audience=$TS_AUDIENCE" \
             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL") || exit 0
