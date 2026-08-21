@@ -104,7 +104,7 @@ no managed infrastructure resources.
 
 ## Create R2 storage and DNS
 
-Create the `mbx-cache-production` R2 bucket with Standard storage in Eastern
+Create the `mise-cache-production` R2 bucket with Standard storage in Eastern
 North America, then create an R2 API token with Object Read & Write permission
 scoped only to that bucket. Save its Access Key ID and Secret Access Key;
 Cloudflare displays the secret only once.
@@ -124,7 +124,7 @@ export MBX_CACHE_IMAGE=ghcr.io/jdx/mbx-cache@sha256:<64-hex-digit-digest>
 export MBX_CACHE_DATABASE_PASSWORD="$(openssl rand -hex 24)"
 export R2_ACCESS_KEY_ID=...
 export R2_SECRET_ACCESS_KEY=...
-export OVH_SSH_HOST="mbx-cache-prod.example-tailnet.ts.net"
+export OVH_SSH_HOST="mise-cache-prod.example-tailnet.ts.net"
 export OVH_SSH_SOURCE_CIDR="$(tailscale ip -4)/32"
 ./deploy/ovh/deploy.sh
 ```
@@ -149,12 +149,10 @@ local project on success or failure. The caller's other environment variables
 are never forwarded.
 
 Automated deployments store `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and
-the database password in the repository's protected `production` GitHub
-Environment. That last secret is still named `MISE_CACHE_DATABASE_PASSWORD`:
-it cannot easily be recreated, so the rebrand left it alone and the workflow
-maps it onto `MBX_CACHE_DATABASE_PASSWORD`. Renaming the reference without
-renaming the secret is what broke the first deploy after the rebrand. Environment protection keeps these values out of ordinary
-pull-request jobs. The R2 credential remains limited by its Cloudflare bucket
+`MISE_CACHE_DATABASE_PASSWORD` in the repository's protected `production` GitHub
+Environment; see "Names that predate the rebrand" below for why that last one
+keeps its original name. Environment protection keeps these values out of
+ordinary pull-request jobs. The R2 credential remains limited by its Cloudflare bucket
 policy even if a workflow is compromised. Use a local password manager to
 populate the same variables for an emergency operator-run deployment; never
 commit their plaintext values.
@@ -231,3 +229,30 @@ Do not add an R2 expiration lifecycle yet. The current metadata store does not
 garbage-collect references when objects expire, so independent R2 expiration
 can leave action results pointing at missing blobs. Monitor usage while
 coordinated metadata/blob garbage collection is implemented.
+
+## Names that predate the rebrand
+
+Renaming this project from `mise-cache` to `mbx-cache` renamed only what lives
+in this repository. Several identifiers name resources owned by Tailscale,
+Cloudflare, GitHub, and the host itself, and those keep their original names.
+Two deploys failed in a row because the repository was changed and the resource
+was not, so **do not "fix" these to match the brand** unless you rename the
+resource first.
+
+| Identifier | Where it lives | Why it stays |
+| --- | --- | --- |
+| `MISE_CACHE_DATABASE_PASSWORD` | `production` GitHub Environment secret | Cannot easily be recreated; the workflow maps it onto `MBX_CACHE_DATABASE_PASSWORD` |
+| `tag:mise-cache-ci` | Tailscale ACL policy | CI may only advertise a tag the tailnet policy defines |
+| `mise-cache-prod.tail13c301.ts.net` | The host's MagicDNS name | Renaming the machine changes the name CI pings and reaches over SSH |
+| `mise-cache-production` | Cloudflare R2 | Pre-existing bucket; the R2 token is scoped to this exact name, and the cache's stored blobs are in it |
+
+One identifier could not be preserved: GitHub's OIDC subject embeds the
+repository, so the tokens this workflow presents now say `jdx/mbx-cache`. Any
+external trust that was pinned to `jdx/mise-cache` has to be updated on that
+side — including the Tailscale trust credential used to join the tailnet, which
+is what fails if the tailnet step reports `failed to exchange JWT for access
+token`.
+
+If decoupling these from the brand becomes worthwhile, move them to repository
+variables so the values live with the infrastructure rather than in the
+workflow.

@@ -1,6 +1,6 @@
 domain                  = "cache.mise.jdx.dev"
 cloudflare_account_id   = "replace-me"
-r2_bucket               = "mbx-cache-production"
+r2_bucket               = "mise-cache-production"
 # existing_server_ipv4  = "replace-with-existing-vps-ipv4"
 datacenter               = "US-EAST-VA"
 operating_system         = "Ubuntu 24.04"
