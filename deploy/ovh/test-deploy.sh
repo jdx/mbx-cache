@@ -64,12 +64,14 @@ grep -Fq "MBX_CACHE_GRAFANA_CONFIG_HASH=\"$grafana_config_hash\"" "$project_dir/
 grep -Fq 'AWS_ACCESS_KEY_ID="r2-access-key"' "$project_dir/runtime/cache.env"
 grep -Fq 'AWS_SECRET_ACCESS_KEY="r2-secret-key"' "$project_dir/runtime/cache.env"
 oidc_json=$(sed -n 's/^MBX_CACHE_OIDC_PROVIDERS_JSON=//p' "$project_dir/runtime/cache.env" | jq -c fromjson)
-jq -e '
+jq -e --argjson repositories "${MBX_CACHE_TEST_REPOSITORIES:?}" '
   .[0].rules as $rules |
-  ["jdx/mise", "jdx/aube", "jdx/usage"] as $repositories |
   # Four rules per trusted repository -- protected-main push, tag, pull
-  # request, other push -- plus the single deployment rule. Derived rather
-  # than written out, so adding a repository does not fail this on a number.
+  # request, other push -- plus the single deployment rule. Both the list and
+  # the count come from the allowlist the deploy just consumed, so adding a
+  # repository does not fail this on a restated name or a stale number. What
+  # is still checked is that every configured repository got exactly those
+  # four rules and that nothing generated a rule beyond them.
   ($rules | length == ($repositories | length) * 4 + 1) and
   ($repositories | all(. as $repository |
     ($rules | any(
@@ -119,8 +121,13 @@ fi
 SH
 chmod 0755 "$test_root/bin/fake-terraform" "$test_root/bin/mise"
 
+# The rule assertions in the fake mise above run in a quoted heredoc, so the
+# allowlist has to reach them through the environment rather than expansion.
+trusted_repositories=$(jq -c 'map(.repository)' "$script_dir/trusted-repositories.json")
+
 common_env=(
   "CAPTURE_DIR=$test_root/capture"
+  "MBX_CACHE_TEST_REPOSITORIES=$trusted_repositories"
   "MBX_CACHE_DATABASE_PASSWORD=database_password_123456"
   "MBX_CACHE_IMAGE=ghcr.io/jdx/mbx-cache@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   "OVH_SSH_HOST=mbx-cache-prod.tailnet.example"
