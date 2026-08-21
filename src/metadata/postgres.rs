@@ -6,6 +6,9 @@ use crate::model::{ActionResult, Digest, TaskActionManifest};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
 
+/// How stale a blob's recorded access has to be before a read refreshes it.
+const ACCESS_REFRESH_INTERVAL: &str = "1 hour";
+
 pub struct PostgresMetadata {
     pool: PgPool,
 }
@@ -72,6 +75,43 @@ impl MetadataStore for PostgresMetadata {
                     .ok_or_else(|| anyhow::anyhow!("database returned an invalid blob ordinal"))
             })
             .collect()
+    }
+
+    async fn touch_blobs(&self, namespace: &str, digests: &[Digest]) -> anyhow::Result<()> {
+        let digests = representable_digests(digests);
+        if digests.is_empty() {
+            return Ok(());
+        }
+        let algorithms = digests
+            .iter()
+            .map(|(digest, _)| digest.algorithm.to_string())
+            .collect::<Vec<_>>();
+        let hashes = digests
+            .iter()
+            .map(|(digest, _)| digest.hash.clone())
+            .collect::<Vec<_>>();
+        let sizes = digests.iter().map(|(_, size)| *size).collect::<Vec<_>>();
+        // Skip blobs touched recently so a frequently served blob costs at most
+        // one write per interval rather than one per read.
+        sqlx::query(
+            "UPDATE namespace_blobs AS blobs \
+             SET last_accessed_at = now() \
+             FROM UNNEST($2::text[], $3::text[], $4::bigint[]) \
+                  AS requested(algorithm, hash, size) \
+             WHERE blobs.namespace = $1 \
+               AND blobs.algorithm = requested.algorithm \
+               AND blobs.hash = requested.hash \
+               AND blobs.size = requested.size \
+               AND blobs.last_accessed_at < now() - $5::interval",
+        )
+        .bind(namespace)
+        .bind(algorithms)
+        .bind(hashes)
+        .bind(sizes)
+        .bind(ACCESS_REFRESH_INTERVAL)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn register_blob(&self, namespace: &str, digest: &Digest) -> anyhow::Result<()> {

@@ -84,6 +84,16 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Note a read so a future garbage collector can evict by real use.
+///
+/// Losing an access record only makes eviction slightly less well informed, so
+/// this never turns a served blob into a failed request.
+async fn record_blob_access(state: &AppState, namespace: &str, digests: &[Digest]) {
+    if let Err(error) = state.metadata.touch_blobs(namespace, digests).await {
+        tracing::debug!(%error, "could not record blob access");
+    }
+}
+
 async fn status() -> impl IntoResponse {
     Json(serde_json::json!({"status":"ok","protocol":1}))
 }
@@ -117,6 +127,7 @@ async fn get_blob(
     {
         return Err(ApiError::not_found("blob not found"));
     }
+    record_blob_access(&state, &namespace, std::slice::from_ref(&digest)).await;
     let blob = state
         .blobs
         .get(&digest)
@@ -284,6 +295,7 @@ async fn pack_blobs(
             return Err(ApiError::internal(error));
         }
     };
+    record_blob_access(&state, &namespace, &visible).await;
     let missing_blobs = requested.len().saturating_sub(visible.len()) as u64;
     let mut pack_guard = state.metrics.start_pack(
         request_started,
