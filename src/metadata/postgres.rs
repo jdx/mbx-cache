@@ -169,9 +169,23 @@ impl MetadataStore for PostgresMetadata {
     }
 
     async fn register_blob(&self, namespace: &str, digest: &Digest) -> anyhow::Result<()> {
-        sqlx::query("INSERT INTO namespace_blobs (namespace, algorithm, hash, size) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING")
-            .bind(namespace).bind(digest.algorithm.to_string()).bind(&digest.hash).bind(digest.size as i64)
-            .execute(&self.pool).await?;
+        // Registering again means a client uploaded this digest again, which
+        // resets the object's age in storage. Carrying the original timestamp
+        // forward would let the sweep delete metadata for an object that is
+        // present, costing a recompile and orphaning the object until its own
+        // expiry.
+        sqlx::query(
+            "INSERT INTO namespace_blobs (namespace, algorithm, hash, size) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (namespace, algorithm, hash, size) DO UPDATE \
+             SET created_at = now(), last_accessed_at = now()",
+        )
+        .bind(namespace)
+        .bind(digest.algorithm.to_string())
+        .bind(&digest.hash)
+        .bind(digest.size as i64)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -369,6 +383,10 @@ mod tests {
             vec![(&representable, i64::MAX)]
         );
     }
+    /// A sweep deletes across every namespace, so tests that age rows and count
+    /// what went have to take turns.
+    static SWEEP: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// Age a namespace's rows so the sweep sees them as expired.
     async fn backdate(store: &PostgresMetadata, namespace: &str, days: u32) {
         for statement in [
@@ -388,6 +406,7 @@ mod tests {
     #[tokio::test]
     async fn a_sweep_leaves_recent_metadata_alone() {
         let Some(store) = store().await else { return };
+        let _serialized = SWEEP.lock().await;
         let namespace = namespace("sweep-recent");
         let action = test_digest("2", 10);
         store.register_blob(&namespace, &action).await.unwrap();
@@ -407,6 +426,7 @@ mod tests {
     #[tokio::test]
     async fn a_sweep_drops_expired_blobs_and_the_results_left_dangling() {
         let Some(store) = store().await else { return };
+        let _serialized = SWEEP.lock().await;
         let namespace = namespace("sweep-expired");
         let action = test_digest("3", 20);
         let metadata = test_digest("4", 30);
@@ -434,8 +454,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_sweep_keeps_a_blob_that_was_uploaded_again() {
+        let Some(store) = store().await else { return };
+        let _serialized = SWEEP.lock().await;
+        let namespace = namespace("sweep-reuploaded");
+        let blob = test_digest("9", 70);
+        store.register_blob(&namespace, &blob).await.unwrap();
+        backdate(&store, &namespace, 40).await;
+
+        // Storage expired the object and a client uploaded it again, so its age
+        // there restarted and the row has to follow.
+        store.register_blob(&namespace, &blob).await.unwrap();
+
+        assert_eq!(
+            store.sweep(30).await.unwrap().blobs,
+            0,
+            "a re-uploaded object is not expired"
+        );
+        assert!(store.blob_visible(&namespace, &blob).await.unwrap());
+    }
+
+    #[tokio::test]
     async fn a_sweep_keeps_a_result_whose_objects_are_still_there() {
         let Some(store) = store().await else { return };
+        let _serialized = SWEEP.lock().await;
         let namespace = namespace("sweep-live-result");
         let action = test_digest("5", 40);
         let metadata = test_digest("6", 50);
@@ -470,6 +512,7 @@ mod tests {
     #[tokio::test]
     async fn a_sweep_expires_manifests_by_their_last_update() {
         let Some(store) = store().await else { return };
+        let _serialized = SWEEP.lock().await;
         let namespace = namespace("sweep-manifests");
         let key = test_digest("7", 60);
         let manifest = TaskActionManifest {

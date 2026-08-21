@@ -207,7 +207,7 @@ The OpenMetrics endpoint exposes the existing action and blob counters plus deta
 
 These metrics intentionally use only fixed, low-cardinality labels. Namespaces, repositories, tokens, OIDC claims, and content digests are never exposed as metric labels. Pack duration includes client backpressure through completion of the response body; time to first byte and blob-store response-header latency separate request setup from streaming time.
 
-Do not expire S3 objects independently of PostgreSQL metadata. The metadata store currently assumes a registered blob remains present, so independent object expiration can leave action results pointing at missing blobs. Until coordinated garbage collection is implemented, monitor storage growth and reset the blob and metadata stores together when reclaiming space.
+Expire objects with the bucket's lifecycle rule and sweep the metadata behind it, as described under Bounding storage above. A registered blob is not assumed to be present: a client that cannot fetch one treats the action as a miss and compiles, so an object expiring ahead of its row costs a recompile rather than a failure.
 
 Back up PostgreSQL and enable S3 versioning or replication as required. The service never exposes a deletion endpoint, so retention and disaster recovery remain administrative concerns.
 
