@@ -2,6 +2,7 @@ mod memory;
 mod postgres;
 
 use crate::model::{ActionResult, Digest, TaskActionManifest};
+use crate::storage::PutOutcome;
 use async_trait::async_trait;
 
 pub use memory::MemoryMetadata;
@@ -47,7 +48,20 @@ pub trait MetadataStore: Send + Sync {
             .await?
             .is_empty())
     }
-    async fn register_blob(&self, namespace: &str, digest: &Digest) -> anyhow::Result<()>;
+    /// Record that a namespace holds this blob.
+    ///
+    /// `stored` is what the upload did to the object, and it decides whether
+    /// the recorded age restarts. A `Created` object's age in storage starts
+    /// now; an `AlreadyExists` one keeps the age it already had, because the
+    /// put was refused and the object was not rewritten. Moving metadata
+    /// forward for an object that did not move is what leaves a row outliving
+    /// the object a lifecycle rule expires.
+    async fn register_blob(
+        &self,
+        namespace: &str,
+        digest: &Digest,
+        stored: PutOutcome,
+    ) -> anyhow::Result<()>;
     /// Record that these blobs were served to a client.
     ///
     /// `namespace_blobs.last_accessed_at` otherwise only ever holds the time a

@@ -247,12 +247,16 @@ it and treats the action as a miss, so a dangling reference costs a recompile
 rather than a failed build. What it does cost is a wasted round trip on every
 lookup, which is what the sweep removes.
 
-Two things the lifecycle cannot do. It expires by age since upload, not by last
-use, so an object served on every build is still deleted at the cutoff and
-re-uploaded; the server records `last_accessed_at` on reads, but nothing acts on
-it yet. And nested objects inside a directory are not examined when deciding
-whether a result dangles, so a result whose output tree lost one file is swept
-only once its top-level objects go.
+Three things this pairing cannot do. The lifecycle expires by age since upload,
+not by last use, so an object served on every build is still deleted at the
+cutoff and re-uploaded; the server records `last_accessed_at` on reads, but
+nothing acts on it yet. Nested objects inside a directory are not examined when
+deciding whether a result dangles, so a result whose output tree lost one file is
+swept only once its top-level objects go. And a blob row's age is the age of the
+upload that wrote the object, which the first namespace to register an object
+another namespace uploaded earlier cannot know: that row starts its clock late
+and can outlive the object by up to the retention window, until the following
+sweep takes it.
 
 ## Names that predate the rebrand
 
