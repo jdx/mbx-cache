@@ -55,7 +55,7 @@ jobs:
         run: |
           install -m 0600 cache.env.example cache.env
           docker compose --env-file runtime.env.example config --quiet
-          jq empty monitoring/grafana/dashboards/mbx-cache.json
+          jq empty monitoring/grafana/dashboards/mise-cache.json
       - name: Validate the Helm chart
         run: |
           base=(--set config.databaseUrl=postgres://cache/cache --set config.s3Bucket=cache)

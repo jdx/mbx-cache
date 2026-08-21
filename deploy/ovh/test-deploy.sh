@@ -55,8 +55,8 @@ prometheus_config_hash=$(sha256sum "$project_dir/monitoring/prometheus.yml")
 prometheus_config_hash=${prometheus_config_hash%% *}
 grep -Fq "MBX_CACHE_PROMETHEUS_CONFIG_HASH=\"$prometheus_config_hash\"" "$project_dir/runtime/.env"
 grafana_config_hash=$({
-  sha256sum "$project_dir/monitoring/grafana/dashboards/mbx-cache.json"
-  sha256sum "$project_dir/monitoring/grafana/provisioning/dashboards/mbx-cache.yml"
+  sha256sum "$project_dir/monitoring/grafana/dashboards/mise-cache.json"
+  sha256sum "$project_dir/monitoring/grafana/provisioning/dashboards/mise-cache.yml"
   sha256sum "$project_dir/monitoring/grafana/provisioning/datasources/prometheus.yml"
 } | awk '{print $1}' | sha256sum)
 grafana_config_hash=${grafana_config_hash%% *}
