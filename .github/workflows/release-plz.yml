@@ -139,6 +139,39 @@ jobs:
           tags: tag:mise-cache-ci
           ping: mise-cache-prod.tail13c301.ts.net
 
+      # Tailscale refuses the exchange when the trust credential's Subject does
+      # not match the claim GitHub actually sends, and that claim appears in no
+      # log on either side. Print it rather than guessing at it.
+      - name: Explain a failed tailnet join
+        if: failure()
+        env:
+          TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
+        run: |
+          response=$(curl --fail --silent --show-error \
+            --get --data-urlencode "audience=$TS_AUDIENCE" \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL") || exit 0
+          token=$(jq -er '.value | strings | select(length > 0)' <<<"$response") || exit 0
+          echo "::add-mask::$token"
+          payload=$(cut -d. -f2 <<<"$token" | tr '_-' '/+')
+          case $(( ${#payload} % 4 )) in
+            2) payload="$payload==" ;;
+            3) payload="$payload=" ;;
+          esac
+          claims=$(base64 -d <<<"$payload" 2>/dev/null) || exit 0
+          echo 'The trust credential at https://login.tailscale.com/admin/settings/trust-credentials'
+          echo 'must accept this Subject, exactly:'
+          jq -r '"  \(.sub)"' <<<"$claims"
+          jq -r '"issuer:      \(.iss)\nrepository:  \(.repository)\nenvironment: \(.environment // "<none>")"' <<<"$claims"
+          if [ "$(jq -r '.aud | if type == "array" then join(",") else . end' <<<"$claims")" = "$TS_AUDIENCE" ]; then
+            echo 'audience:    matches TS_AUDIENCE'
+          else
+            echo 'audience:    does NOT match TS_AUDIENCE, so the credential this'
+            echo '             workflow names and the one it targets have diverged'
+          fi
+          echo 'Joining a tailnet also needs write on the auth_keys scope and the'
+          echo 'tag the workflow advertises.'
+
       - name: Configure deployment outputs
         env:
           TF_VAR_cloudflare_account_id: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
