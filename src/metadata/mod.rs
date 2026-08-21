@@ -40,6 +40,15 @@ pub trait MetadataStore: Send + Sync {
             .is_empty())
     }
     async fn register_blob(&self, namespace: &str, digest: &Digest) -> anyhow::Result<()>;
+    /// Record that these blobs were served to a client.
+    ///
+    /// `namespace_blobs.last_accessed_at` otherwise only ever holds the time a
+    /// blob was uploaded, which would make a future garbage collector evict the
+    /// blobs a build depends on most. Recording an access is best-effort and
+    /// must never fail a read; stores without durable metadata do nothing.
+    async fn touch_blobs(&self, _namespace: &str, _digests: &[Digest]) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn get(&self, namespace: &str, action: &Digest) -> anyhow::Result<Option<ActionResult>>;
     async fn commit(
         &self,
