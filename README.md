@@ -204,7 +204,21 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 ```
 
-The protocol specification and mise client live in [jdx/mise](https://github.com/jdx/mise).
+The tests covering the PostgreSQL metadata store need a server to talk to, and
+skip without one. Point them at a throwaway database to run them:
+
+```sh
+docker run --rm -d --name mbx-cache-test-db -p 5432:5432   -e POSTGRES_USER=cache -e POSTGRES_PASSWORD=cache -e POSTGRES_DB=cache   postgres:17-alpine
+MBX_CACHE_TEST_DATABASE_URL=postgres://cache:cache@127.0.0.1:5432/cache   cargo test --all-features
+```
+
+Migrations run automatically, each test uses a namespace of its own, so one
+database serves the whole suite. CI always provides this, and the tests fail
+rather than skip when `CI` is set without a database, so the backend cannot
+quietly go uncovered.
+
+The client that speaks this protocol lives in
+[jdx/mr-boxington](https://github.com/jdx/mr-boxington).
 
 ## License
 

@@ -203,9 +203,87 @@ impl MetadataStore for PostgresMetadata {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::{MIGRATOR, representable_digests};
-    use crate::model::{Algorithm, Digest};
+    use super::*;
+    use crate::model::Algorithm;
+
+    /// Connect to the database CI provides for the tests below.
+    ///
+    /// A local run without one skips them, but CI must never skip silently:
+    /// these are the only coverage this backend has.
+    async fn store() -> Option<PostgresMetadata> {
+        match std::env::var("MBX_CACHE_TEST_DATABASE_URL") {
+            Ok(url) => Some(
+                PostgresMetadata::connect(&url)
+                    .await
+                    .expect("the test database should accept connections"),
+            ),
+            Err(_) => {
+                assert!(
+                    std::env::var_os("CI").is_none(),
+                    "MBX_CACHE_TEST_DATABASE_URL must be set so CI exercises this backend"
+                );
+                eprintln!(
+                    "skipping: set MBX_CACHE_TEST_DATABASE_URL to run the PostgreSQL metadata tests"
+                );
+                None
+            }
+        }
+    }
+
+    /// A namespace no other test shares, so one database serves them all.
+    fn namespace(label: &str) -> String {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        format!(
+            "test/{label}/{}/{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    fn test_digest(fill: &str, size: u64) -> Digest {
+        Digest {
+            algorithm: Algorithm::Blake3,
+            hash: fill.repeat(64),
+            size,
+        }
+    }
+
+    fn action_result(action: &Digest, metadata: Option<&Digest>) -> ActionResult {
+        ActionResult {
+            action: action.clone(),
+            metadata: metadata.cloned(),
+            output_root: None,
+            version: 1,
+        }
+    }
+
+    /// The recorded access as text, so a test can assert it did not move.
+    async fn access_timestamp(store: &PostgresMetadata, namespace: &str) -> String {
+        sqlx::query(
+            "SELECT last_accessed_at::text AS stamp FROM namespace_blobs WHERE namespace = $1",
+        )
+        .bind(namespace)
+        .fetch_one(&store.pool)
+        .await
+        .expect("the blob row should exist")
+        .try_get::<String, _>("stamp")
+        .expect("stamp should be text")
+    }
+
+    async fn access_age_seconds(store: &PostgresMetadata, namespace: &str) -> f64 {
+        sqlx::query(
+            "SELECT EXTRACT(EPOCH FROM (now() - last_accessed_at))::float8 AS age \
+             FROM namespace_blobs WHERE namespace = $1",
+        )
+        .bind(namespace)
+        .fetch_one(&store.pool)
+        .await
+        .expect("the blob row should exist")
+        .try_get::<f64, _>("age")
+        .expect("age should be a float")
+    }
 
     #[test]
     fn embedded_migration_versions_are_unique() {
@@ -235,6 +313,170 @@ mod tests {
         assert_eq!(
             representable_digests(&[representable.clone(), unrepresentable]),
             vec![(&representable, i64::MAX)]
+        );
+    }
+    #[tokio::test]
+    async fn blobs_are_visible_only_inside_their_namespace() {
+        let Some(store) = store().await else { return };
+        let mine = namespace("blobs-mine");
+        let theirs = namespace("blobs-theirs");
+        let present = test_digest("a", 10);
+        let absent = test_digest("b", 20);
+
+        store.register_blob(&mine, &present).await.unwrap();
+
+        assert_eq!(
+            store
+                .visible_blobs(&mine, &[present.clone(), absent.clone()])
+                .await
+                .unwrap(),
+            vec![present.clone()],
+            "only the registered blob is visible"
+        );
+        assert!(
+            store
+                .visible_blobs(&theirs, std::slice::from_ref(&present))
+                .await
+                .unwrap()
+                .is_empty(),
+            "another namespace must not see it"
+        );
+        assert!(store.blob_visible(&mine, &present).await.unwrap());
+        assert!(!store.blob_visible(&mine, &absent).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn serving_a_blob_refreshes_a_stale_access_time() {
+        let Some(store) = store().await else { return };
+        let namespace = namespace("touch-stale");
+        let blob = test_digest("c", 30);
+        store.register_blob(&namespace, &blob).await.unwrap();
+        sqlx::query(
+            "UPDATE namespace_blobs SET last_accessed_at = now() - interval '3 days' \
+             WHERE namespace = $1",
+        )
+        .bind(&namespace)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(access_age_seconds(&store, &namespace).await > 86_400.0);
+
+        let before = access_timestamp(&store, &namespace).await;
+
+        store.touch_blobs(&namespace, &[blob]).await.unwrap();
+
+        assert_ne!(
+            before,
+            access_timestamp(&store, &namespace).await,
+            "a served blob should record the access"
+        );
+        assert!(
+            access_age_seconds(&store, &namespace).await < 60.0,
+            "and the recorded access should be recent"
+        );
+    }
+
+    #[tokio::test]
+    async fn serving_a_blob_again_leaves_a_fresh_access_time_alone() {
+        let Some(store) = store().await else { return };
+        let namespace = namespace("touch-fresh");
+        let blob = test_digest("d", 40);
+        // Registration already recorded now(), so a read is inside the refresh
+        // interval and must not write.
+        store.register_blob(&namespace, &blob).await.unwrap();
+
+        let before = access_timestamp(&store, &namespace).await;
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        store.touch_blobs(&namespace, &[blob]).await.unwrap();
+        let after = access_timestamp(&store, &namespace).await;
+
+        assert_eq!(
+            before, after,
+            "a blob served inside the refresh interval must cost no write"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_action_result_commits_once_and_reports_conflicts() {
+        let Some(store) = store().await else { return };
+        let elsewhere = namespace("actions-elsewhere");
+        let namespace = namespace("actions");
+        let action = test_digest("e", 50);
+        let result = action_result(&action, None);
+
+        assert_eq!(
+            store.commit(&namespace, &action, &result).await.unwrap(),
+            CommitOutcome::Created
+        );
+        assert_eq!(
+            store.commit(&namespace, &action, &result).await.unwrap(),
+            CommitOutcome::AlreadyExists,
+            "committing identical bytes is not a conflict"
+        );
+        assert_eq!(
+            store
+                .commit(
+                    &namespace,
+                    &action,
+                    &action_result(&action, Some(&test_digest("f", 60)))
+                )
+                .await
+                .unwrap(),
+            CommitOutcome::Conflict,
+            "a different result for the same action is a conflict"
+        );
+
+        let stored = store.get(&namespace, &action).await.unwrap().unwrap();
+        assert_eq!(stored.action, action);
+        assert!(stored.metadata.is_none(), "the first commit wins");
+        assert!(
+            store.get(&elsewhere, &action).await.unwrap().is_none(),
+            "action results do not leak across namespaces"
+        );
+    }
+
+    #[tokio::test]
+    async fn manifest_commits_respect_the_expected_etag() {
+        let Some(store) = store().await else { return };
+        let namespace = namespace("manifests");
+        let key = test_digest("1", 70);
+        let manifest = TaskActionManifest {
+            predictions: Vec::new(),
+            task: "2".repeat(64),
+            version: 1,
+        };
+
+        assert_eq!(
+            store
+                .commit_manifest(&namespace, &key, None, "etag-1", &manifest)
+                .await
+                .unwrap(),
+            ManifestCommitOutcome::Created
+        );
+        assert_eq!(
+            store
+                .commit_manifest(&namespace, &key, Some("etag-1"), "etag-2", &manifest)
+                .await
+                .unwrap(),
+            ManifestCommitOutcome::Updated
+        );
+        assert_eq!(
+            store
+                .commit_manifest(&namespace, &key, Some("etag-1"), "etag-3", &manifest)
+                .await
+                .unwrap(),
+            ManifestCommitOutcome::PreconditionFailed,
+            "a stale etag must not overwrite a newer manifest"
+        );
+
+        assert_eq!(
+            store
+                .get_manifest(&namespace, &key)
+                .await
+                .unwrap()
+                .unwrap()
+                .etag,
+            "etag-2"
         );
     }
 }

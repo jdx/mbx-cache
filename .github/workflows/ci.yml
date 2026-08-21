@@ -84,6 +84,24 @@ jobs:
       - run: deploy/ovh/test-deploy.sh
   test:
     runs-on: ubuntu-latest
+    # The PostgreSQL metadata store is the production backend, so the tests run
+    # against a real server rather than only the in-memory store.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: cache
+          POSTGRES_PASSWORD: cache
+          POSTGRES_DB: cache
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cache"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      MBX_CACHE_TEST_DATABASE_URL: postgres://cache:cache@127.0.0.1:5432/cache
     steps:
       - uses: actions/checkout@v5
         with:
