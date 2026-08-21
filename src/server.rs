@@ -12,7 +12,12 @@ use sha2::Digest as _;
 use std::{collections::HashSet, io, sync::Arc, time::Instant};
 use tempfile::NamedTempFile;
 use tokio::io::AsyncWriteExt;
-use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
+use tower_http::{
+    compression::{CompressionLayer, CompressionLevel},
+    decompression::RequestDecompressionLayer,
+    limit::RequestBodyLimitLayer,
+    trace::TraceLayer,
+};
 
 use crate::{
     auth::{Access, Authorizer},
@@ -80,6 +85,14 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/metrics", get(metrics))
         .layer(RequestBodyLimitLayer::new(limit))
+        // Decompression sits outside the body limit, so the limit bounds the
+        // *decompressed* stream: a small compressed body cannot expand past it
+        // inside a handler. put_blob's own size check then cuts anything that
+        // exceeds its declared digest, so a zstd bomb buys an attacker nothing.
+        .layer(RequestDecompressionLayer::new())
+        // Fastest: rustc artifacts still compress well below level 1's cost,
+        // and a cache server's CPU is better spent serving than squeezing.
+        .layer(CompressionLayer::new().quality(CompressionLevel::Fastest))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -102,7 +115,7 @@ async fn capabilities(State(state): State<AppState>) -> impl IntoResponse {
     Json(serde_json::json!({
         "protocol":{"major":1,"minor":0},
         "digest_algorithms":["blake3","sha256"],
-        "compressors":["identity"],
+        "compressors":["identity","zstd"],
         "action_kinds":{
             "rustc":{"action_schema":1,"metadata_schema":1},
             "task":{"action_schema":1,"metadata_schema":1}
@@ -1252,6 +1265,62 @@ mod tests {
         let headers = response.headers().clone();
         let body = response.into_body().collect().await.unwrap().to_bytes();
         (headers, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn round_trips_zstd_compressed_transfers() {
+        let (app, _directory) = test_app().await;
+        // Long enough to clear the compression layer's minimum-size predicate,
+        // repetitive enough that compression visibly shrinks it.
+        let bytes = b"cached output ".repeat(64);
+        let digest = digest(&bytes);
+        let uri = format!(
+            "/v1/blobs/{}/{}/{}",
+            digest.algorithm, digest.hash, digest.size
+        );
+
+        // Upload compressed: the digest describes the *decompressed* content,
+        // which is what the handler must see after the decompression layer.
+        let compressed = zstd::encode_all(bytes.as_slice(), 0).unwrap();
+        assert!(compressed.len() < bytes.len());
+        let mut upload = request("PUT", uri.clone(), Body::from(compressed));
+        upload
+            .headers_mut()
+            .insert(header::CONTENT_ENCODING, "zstd".parse().unwrap());
+        let response = app.clone().oneshot(upload).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        // Download compressed: the body on the wire is zstd, and decoding it
+        // returns the exact stored bytes.
+        let mut download = request("GET", uri.clone(), Body::empty());
+        download
+            .headers_mut()
+            .insert(header::ACCEPT_ENCODING, "zstd".parse().unwrap());
+        let response = app.clone().oneshot(download).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+            Some("zstd")
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(body.len() < bytes.len());
+        assert_eq!(zstd::decode_all(&body[..]).unwrap(), bytes);
+
+        // A client that never asks for compression still gets identity bytes,
+        // which is what keeps already-released clients working unchanged.
+        let response = app
+            .oneshot(request("GET", uri, Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get(header::CONTENT_ENCODING).is_none());
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            bytes.as_slice()
+        );
     }
 
     #[tokio::test]
