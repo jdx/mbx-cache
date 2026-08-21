@@ -66,8 +66,12 @@ grep -Fq 'AWS_SECRET_ACCESS_KEY="r2-secret-key"' "$project_dir/runtime/cache.env
 oidc_json=$(sed -n 's/^MBX_CACHE_OIDC_PROVIDERS_JSON=//p' "$project_dir/runtime/cache.env" | jq -c fromjson)
 jq -e '
   .[0].rules as $rules |
-  ($rules | length == 9) and
-  (["jdx/mise", "jdx/aube"] | all(. as $repository |
+  ["jdx/mise", "jdx/aube", "jdx/usage"] as $repositories |
+  # Four rules per trusted repository -- protected-main push, tag, pull
+  # request, other push -- plus the single deployment rule. Derived rather
+  # than written out, so adding a repository does not fail this on a number.
+  ($rules | length == ($repositories | length) * 4 + 1) and
+  ($repositories | all(. as $repository |
     ($rules | any(
       .claims.repository == $repository and
       .claims.repository_owner_id == "216188" and
