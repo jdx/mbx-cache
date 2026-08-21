@@ -178,6 +178,21 @@ Servers advertising `features.blob_packs` accept the same digest-list JSON as `b
 
 ## Operations
 
+### Bounding storage
+
+Blob storage is expired by the bucket's own lifecycle rule; `mbx-cache` removes
+the metadata those objects leave behind and exits without serving:
+
+```sh
+mbx-cache --sweep-metadata-older-than-days 35
+```
+
+It drops blob rows past that age, the action results left referencing them, and
+manifests untouched for that long. Keep the age longer than the storage
+lifecycle so objects go first — reversed, it removes rows for objects that still
+exist and turns cache hits into recompiles. A dangling reference is never fatal:
+a client that cannot fetch a blob treats the action as a miss.
+
 Run multiple stateless replicas against the same PostgreSQL database and S3 bucket. Readiness and liveness probes use `/v1/status`. Scrape `/metrics` with Prometheus.
 
 The OpenMetrics endpoint exposes the existing action and blob counters plus detailed blob-pack telemetry:

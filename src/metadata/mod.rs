@@ -19,6 +19,14 @@ pub struct ManifestRecord {
     pub manifest: TaskActionManifest,
 }
 
+/// What a metadata sweep removed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SweepOutcome {
+    pub blobs: u64,
+    pub action_results: u64,
+    pub manifests: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ManifestCommitOutcome {
     Created,
@@ -69,6 +77,12 @@ pub trait MetadataStore: Send + Sync {
         etag: &str,
         manifest: &TaskActionManifest,
     ) -> anyhow::Result<ManifestCommitOutcome>;
+    /// Drop metadata for objects storage has already expired.
+    ///
+    /// Stores without durable metadata have nothing to sweep.
+    async fn sweep(&self, _older_than_days: u32) -> anyhow::Result<SweepOutcome> {
+        Ok(SweepOutcome::default())
+    }
 }
 
 pub async fn from_url(url: &str) -> anyhow::Result<std::sync::Arc<dyn MetadataStore>> {
