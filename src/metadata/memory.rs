@@ -6,6 +6,7 @@ use std::{
 
 use super::{CommitOutcome, ManifestCommitOutcome, ManifestRecord, MetadataStore};
 use crate::model::{ActionResult, Digest, TaskActionManifest};
+use crate::storage::PutOutcome;
 
 #[derive(Default)]
 pub struct MemoryMetadata {
@@ -29,7 +30,13 @@ impl MetadataStore for MemoryMetadata {
             .collect())
     }
 
-    async fn register_blob(&self, namespace: &str, digest: &Digest) -> anyhow::Result<()> {
+    /// Nothing here ages out, so what the put did to the object does not matter.
+    async fn register_blob(
+        &self,
+        namespace: &str,
+        digest: &Digest,
+        _stored: PutOutcome,
+    ) -> anyhow::Result<()> {
         self.blobs
             .write()
             .expect("metadata lock poisoned")

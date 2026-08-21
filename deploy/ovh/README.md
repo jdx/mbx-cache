@@ -225,10 +225,38 @@ service definition so startup-loaded configuration changes recreate only
 Prometheus or Grafana as needed. Grafana keeps no mutable state: its exact
 datasource and dashboard set is reprovisioned from these files on recreation.
 
-Do not add an R2 expiration lifecycle yet. The current metadata store does not
-garbage-collect references when objects expire, so independent R2 expiration
-can leave action results pointing at missing blobs. Monitor usage while
-coordinated metadata/blob garbage collection is implemented.
+### Bounding storage
+
+R2 expires the objects through a bucket lifecycle rule, and a metadata sweep
+drops the rows those objects leave behind. Run the two together:
+
+```sh
+# Once, on the bucket: expire objects by age.
+# Then, periodically, on the host:
+docker compose exec cache mbx-cache --sweep-metadata-older-than-days 35
+```
+
+**Keep the sweep's age longer than the lifecycle's.** Storage has to delete
+first so metadata follows it; reversed, the sweep drops rows for objects that
+still exist and every client that wanted one recompiles for nothing.
+
+An earlier note here warned against a lifecycle rule at all, on the grounds that
+expiring objects would leave action results pointing at missing blobs. That part
+is true, but it is not harmful: a client that cannot fetch a referenced blob logs
+it and treats the action as a miss, so a dangling reference costs a recompile
+rather than a failed build. What it does cost is a wasted round trip on every
+lookup, which is what the sweep removes.
+
+Three things this pairing cannot do. The lifecycle expires by age since upload,
+not by last use, so an object served on every build is still deleted at the
+cutoff and re-uploaded; the server records `last_accessed_at` on reads, but
+nothing acts on it yet. Nested objects inside a directory are not examined when
+deciding whether a result dangles, so a result whose output tree lost one file is
+swept only once its top-level objects go. And a blob row's age is the age of the
+upload that wrote the object, which the first namespace to register an object
+another namespace uploaded earlier cannot know: that row starts its clock late
+and can outlive the object by up to the retention window, until the following
+sweep takes it.
 
 ## Names that predate the rebrand
 

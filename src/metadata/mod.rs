@@ -2,6 +2,7 @@ mod memory;
 mod postgres;
 
 use crate::model::{ActionResult, Digest, TaskActionManifest};
+use crate::storage::PutOutcome;
 use async_trait::async_trait;
 
 pub use memory::MemoryMetadata;
@@ -17,6 +18,14 @@ pub enum CommitOutcome {
 pub struct ManifestRecord {
     pub etag: String,
     pub manifest: TaskActionManifest,
+}
+
+/// What a metadata sweep removed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SweepOutcome {
+    pub blobs: u64,
+    pub action_results: u64,
+    pub manifests: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,7 +48,20 @@ pub trait MetadataStore: Send + Sync {
             .await?
             .is_empty())
     }
-    async fn register_blob(&self, namespace: &str, digest: &Digest) -> anyhow::Result<()>;
+    /// Record that a namespace holds this blob.
+    ///
+    /// `stored` is what the upload did to the object, and it decides whether
+    /// the recorded age restarts. A `Created` object's age in storage starts
+    /// now; an `AlreadyExists` one keeps the age it already had, because the
+    /// put was refused and the object was not rewritten. Moving metadata
+    /// forward for an object that did not move is what leaves a row outliving
+    /// the object a lifecycle rule expires.
+    async fn register_blob(
+        &self,
+        namespace: &str,
+        digest: &Digest,
+        stored: PutOutcome,
+    ) -> anyhow::Result<()>;
     /// Record that these blobs were served to a client.
     ///
     /// `namespace_blobs.last_accessed_at` otherwise only ever holds the time a
@@ -69,6 +91,12 @@ pub trait MetadataStore: Send + Sync {
         etag: &str,
         manifest: &TaskActionManifest,
     ) -> anyhow::Result<ManifestCommitOutcome>;
+    /// Drop metadata for objects storage has already expired.
+    ///
+    /// Stores without durable metadata have nothing to sweep.
+    async fn sweep(&self, _older_than_days: u32) -> anyhow::Result<SweepOutcome> {
+        Ok(SweepOutcome::default())
+    }
 }
 
 pub async fn from_url(url: &str) -> anyhow::Result<std::sync::Arc<dyn MetadataStore>> {

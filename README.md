@@ -178,6 +178,21 @@ Servers advertising `features.blob_packs` accept the same digest-list JSON as `b
 
 ## Operations
 
+### Bounding storage
+
+Blob storage is expired by the bucket's own lifecycle rule; `mbx-cache` removes
+the metadata those objects leave behind and exits without serving:
+
+```sh
+mbx-cache --sweep-metadata-older-than-days 35
+```
+
+It drops blob rows past that age, the action results left referencing them, and
+manifests untouched for that long. Keep the age longer than the storage
+lifecycle so objects go first — reversed, it removes rows for objects that still
+exist and turns cache hits into recompiles. A dangling reference is never fatal:
+a client that cannot fetch a blob treats the action as a miss.
+
 Run multiple stateless replicas against the same PostgreSQL database and S3 bucket. Readiness and liveness probes use `/v1/status`. Scrape `/metrics` with Prometheus.
 
 The OpenMetrics endpoint exposes the existing action and blob counters plus detailed blob-pack telemetry:
@@ -192,7 +207,7 @@ The OpenMetrics endpoint exposes the existing action and blob counters plus deta
 
 These metrics intentionally use only fixed, low-cardinality labels. Namespaces, repositories, tokens, OIDC claims, and content digests are never exposed as metric labels. Pack duration includes client backpressure through completion of the response body; time to first byte and blob-store response-header latency separate request setup from streaming time.
 
-Do not expire S3 objects independently of PostgreSQL metadata. The metadata store currently assumes a registered blob remains present, so independent object expiration can leave action results pointing at missing blobs. Until coordinated garbage collection is implemented, monitor storage growth and reset the blob and metadata stores together when reclaiming space.
+Expire objects with the bucket's lifecycle rule and sweep the metadata behind it, as described under Bounding storage above. A registered blob is not assumed to be present: a client that cannot fetch one treats the action as a miss and compiles, so an object expiring ahead of its row costs a recompile rather than a failure.
 
 Back up PostgreSQL and enable S3 versioning or replication as required. The service never exposes a deletion endpoint, so retention and disaster recovery remain administrative concerns.
 

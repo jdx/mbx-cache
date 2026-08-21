@@ -24,8 +24,22 @@ async fn main() -> Result<()> {
         .json()
         .init();
 
-    let blobs = storage::from_config(&config).await?;
     let metadata = metadata::from_url(&config.database_url).await?;
+    // A sweep is an operator action, not part of serving: do it and exit rather
+    // than deleting from under a live server.
+    if let Some(days) = config.sweep_metadata_older_than_days {
+        let swept = metadata.sweep(days).await?;
+        info!(
+            older_than_days = days,
+            blobs = swept.blobs,
+            action_results = swept.action_results,
+            manifests = swept.manifests,
+            "swept metadata"
+        );
+        return Ok(());
+    }
+
+    let blobs = storage::from_config(&config).await?;
     let state = server::AppState::new(
         blobs,
         metadata,

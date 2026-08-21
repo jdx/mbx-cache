@@ -203,7 +203,7 @@ async fn put_blob(
         .map_err(ApiError::internal)?;
     state
         .metadata
-        .register_blob(&namespace, &digest)
+        .register_blob(&namespace, &digest, outcome)
         .await
         .map_err(ApiError::internal)?;
     state.metrics.inc_blob_upload();

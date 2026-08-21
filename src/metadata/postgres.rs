@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use sqlx::{PgPool, Row};
 
-use super::{CommitOutcome, ManifestCommitOutcome, ManifestRecord, MetadataStore};
+use super::{CommitOutcome, ManifestCommitOutcome, ManifestRecord, MetadataStore, SweepOutcome};
 use crate::model::{ActionResult, Digest, TaskActionManifest};
+use crate::storage::PutOutcome;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
 
@@ -77,6 +78,60 @@ impl MetadataStore for PostgresMetadata {
             .collect()
     }
 
+    async fn sweep(&self, older_than_days: u32) -> anyhow::Result<SweepOutcome> {
+        let age = format!("{older_than_days} days");
+        // One transaction, so no reader sees a result whose blobs this sweep
+        // has already removed. Blobs go first; the dangling query below then
+        // observes the post-delete state.
+        let mut transaction = self.pool.begin().await?;
+        let blobs =
+            sqlx::query("DELETE FROM namespace_blobs WHERE created_at < now() - $1::interval")
+                .bind(&age)
+                .execute(&mut *transaction)
+                .await?
+                .rows_affected();
+
+        // A result whose objects are gone can only produce a miss, and it costs
+        // a wasted round trip every time a client asks for it. Only the
+        // top-level objects are checked: a directory that lost a nested object
+        // still restores as a miss, which is safe.
+        let action_results = sqlx::query(
+            "DELETE FROM action_results AS results \
+             WHERE EXISTS ( \
+               SELECT 1 \
+               FROM (VALUES (results.result -> 'metadata'), \
+                            (results.result -> 'output_root')) AS referenced(digest) \
+               WHERE jsonb_typeof(referenced.digest) = 'object' \
+                 AND NOT EXISTS ( \
+                   SELECT 1 FROM namespace_blobs AS blobs \
+                   WHERE blobs.namespace = results.namespace \
+                     AND blobs.algorithm = referenced.digest ->> 'algorithm' \
+                     AND blobs.hash = referenced.digest ->> 'hash' \
+                     AND blobs.size = (referenced.digest ->> 'size')::bigint \
+                 ) \
+             )",
+        )
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+
+        // Manifests only predict actions, so an old one costs a cold prefetch
+        // rather than a wrong answer. They are aged out on their own use.
+        let manifests =
+            sqlx::query("DELETE FROM action_manifests WHERE updated_at < now() - $1::interval")
+                .bind(&age)
+                .execute(&mut *transaction)
+                .await?
+                .rows_affected();
+
+        transaction.commit().await?;
+        Ok(SweepOutcome {
+            blobs,
+            action_results,
+            manifests,
+        })
+    }
+
     async fn touch_blobs(&self, namespace: &str, digests: &[Digest]) -> anyhow::Result<()> {
         let digests = representable_digests(digests);
         if digests.is_empty() {
@@ -114,10 +169,38 @@ impl MetadataStore for PostgresMetadata {
         Ok(())
     }
 
-    async fn register_blob(&self, namespace: &str, digest: &Digest) -> anyhow::Result<()> {
-        sqlx::query("INSERT INTO namespace_blobs (namespace, algorithm, hash, size) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING")
-            .bind(namespace).bind(digest.algorithm.to_string()).bind(&digest.hash).bind(digest.size as i64)
-            .execute(&self.pool).await?;
+    async fn register_blob(
+        &self,
+        namespace: &str,
+        digest: &Digest,
+        stored: PutOutcome,
+    ) -> anyhow::Result<()> {
+        // `created_at` has to track the object's age in storage, since that is
+        // what a lifecycle rule expires and what `sweep` follows. An upload
+        // that wrote the object restarts both, so the row follows it; one
+        // refused because the object was already there restarts neither, and
+        // moving the row forward would leave it visible long after the
+        // lifecycle deleted the object it names.
+        //
+        // A first registration of an object another namespace uploaded earlier
+        // is the one case this cannot get right: the row starts at now() while
+        // the object is already partway to its expiry, so it can outlive the
+        // object by up to the retention window. The next sweep after that
+        // removes it.
+        sqlx::query(
+            "INSERT INTO namespace_blobs (namespace, algorithm, hash, size) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (namespace, algorithm, hash, size) DO UPDATE \
+             SET created_at = CASE WHEN $5 THEN now() ELSE namespace_blobs.created_at END, \
+                 last_accessed_at = now()",
+        )
+        .bind(namespace)
+        .bind(digest.algorithm.to_string())
+        .bind(&digest.hash)
+        .bind(digest.size as i64)
+        .bind(matches!(stored, PutOutcome::Created))
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -315,6 +398,209 @@ mod tests {
             vec![(&representable, i64::MAX)]
         );
     }
+    /// A sweep deletes across every namespace, so tests that age rows and count
+    /// what went have to take turns.
+    static SWEEP: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Age a namespace's rows so the sweep sees them as expired.
+    async fn backdate(store: &PostgresMetadata, namespace: &str, days: u32) {
+        for statement in [
+            "UPDATE namespace_blobs SET created_at = now() - ($2 || ' days')::interval WHERE namespace = $1",
+            "UPDATE action_results SET created_at = now() - ($2 || ' days')::interval WHERE namespace = $1",
+            "UPDATE action_manifests SET updated_at = now() - ($2 || ' days')::interval WHERE namespace = $1",
+        ] {
+            sqlx::query(statement)
+                .bind(namespace)
+                .bind(days.to_string())
+                .execute(&store.pool)
+                .await
+                .expect("backdating should succeed");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sweep_leaves_recent_metadata_alone() {
+        let Some(store) = store().await else { return };
+        let _serialized = SWEEP.lock().await;
+        let namespace = namespace("sweep-recent");
+        let action = test_digest("2", 10);
+        store
+            .register_blob(&namespace, &action, PutOutcome::Created)
+            .await
+            .unwrap();
+        store
+            .commit(&namespace, &action, &action_result(&action, None))
+            .await
+            .unwrap();
+
+        let swept = store.sweep(30).await.unwrap();
+
+        assert_eq!(swept.blobs, 0, "a fresh blob is not expired");
+        assert!(store.blob_visible(&namespace, &action).await.unwrap());
+        assert!(store.get(&namespace, &action).await.unwrap().is_some());
+        let _ = swept.manifests;
+    }
+
+    #[tokio::test]
+    async fn a_sweep_drops_expired_blobs_and_the_results_left_dangling() {
+        let Some(store) = store().await else { return };
+        let _serialized = SWEEP.lock().await;
+        let namespace = namespace("sweep-expired");
+        let action = test_digest("3", 20);
+        let metadata = test_digest("4", 30);
+        store
+            .register_blob(&namespace, &action, PutOutcome::Created)
+            .await
+            .unwrap();
+        store
+            .register_blob(&namespace, &metadata, PutOutcome::Created)
+            .await
+            .unwrap();
+        store
+            .commit(
+                &namespace,
+                &action,
+                &action_result(&action, Some(&metadata)),
+            )
+            .await
+            .unwrap();
+        backdate(&store, &namespace, 40).await;
+
+        let swept = store.sweep(30).await.unwrap();
+
+        assert_eq!(swept.blobs, 2, "both expired blobs go");
+        assert_eq!(
+            swept.action_results, 1,
+            "the result referencing them cannot survive them"
+        );
+        assert!(!store.blob_visible(&namespace, &action).await.unwrap());
+        assert!(store.get(&namespace, &action).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_sweep_keeps_a_blob_that_was_uploaded_again() {
+        let Some(store) = store().await else { return };
+        let _serialized = SWEEP.lock().await;
+        let namespace = namespace("sweep-reuploaded");
+        let blob = test_digest("9", 70);
+        store
+            .register_blob(&namespace, &blob, PutOutcome::Created)
+            .await
+            .unwrap();
+        backdate(&store, &namespace, 40).await;
+
+        // Storage expired the object and the upload wrote it again, so its age
+        // there restarted and the row has to follow.
+        store
+            .register_blob(&namespace, &blob, PutOutcome::Created)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.sweep(30).await.unwrap().blobs,
+            0,
+            "a re-uploaded object is not expired"
+        );
+        assert!(store.blob_visible(&namespace, &blob).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_sweep_expires_a_blob_the_upload_did_not_rewrite() {
+        let Some(store) = store().await else { return };
+        let _serialized = SWEEP.lock().await;
+        let namespace = namespace("sweep-upload-refused");
+        let blob = test_digest("9", 80);
+        store
+            .register_blob(&namespace, &blob, PutOutcome::Created)
+            .await
+            .unwrap();
+        backdate(&store, &namespace, 40).await;
+
+        // The put was refused because the object was already there, so its age
+        // in storage did not move and neither may the row's. Refreshing here
+        // would keep the row past the lifecycle rule that deletes the object.
+        store
+            .register_blob(&namespace, &blob, PutOutcome::AlreadyExists)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.sweep(30).await.unwrap().blobs,
+            1,
+            "an upload that rewrote nothing does not extend the row"
+        );
+        assert!(!store.blob_visible(&namespace, &blob).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_sweep_keeps_a_result_whose_objects_are_still_there() {
+        let Some(store) = store().await else { return };
+        let _serialized = SWEEP.lock().await;
+        let namespace = namespace("sweep-live-result");
+        let action = test_digest("5", 40);
+        let metadata = test_digest("6", 50);
+        store
+            .register_blob(&namespace, &action, PutOutcome::Created)
+            .await
+            .unwrap();
+        store
+            .register_blob(&namespace, &metadata, PutOutcome::Created)
+            .await
+            .unwrap();
+        store
+            .commit(
+                &namespace,
+                &action,
+                &action_result(&action, Some(&metadata)),
+            )
+            .await
+            .unwrap();
+        // Age only the result. Its objects are current, so it is still useful.
+        sqlx::query(
+            "UPDATE action_results SET created_at = now() - interval '40 days' WHERE namespace = $1",
+        )
+        .bind(&namespace)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let swept = store.sweep(30).await.unwrap();
+
+        assert_eq!(
+            swept.action_results, 0,
+            "age alone does not expire a result"
+        );
+        assert!(store.get(&namespace, &action).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_sweep_expires_manifests_by_their_last_update() {
+        let Some(store) = store().await else { return };
+        let _serialized = SWEEP.lock().await;
+        let namespace = namespace("sweep-manifests");
+        let key = test_digest("7", 60);
+        let manifest = TaskActionManifest {
+            predictions: Vec::new(),
+            task: "8".repeat(64),
+            version: 1,
+        };
+        store
+            .commit_manifest(&namespace, &key, None, "etag-1", &manifest)
+            .await
+            .unwrap();
+
+        assert_eq!(store.sweep(30).await.unwrap().manifests, 0);
+        backdate(&store, &namespace, 40).await;
+        assert_eq!(store.sweep(30).await.unwrap().manifests, 1);
+        assert!(
+            store
+                .get_manifest(&namespace, &key)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
     #[tokio::test]
     async fn blobs_are_visible_only_inside_their_namespace() {
         let Some(store) = store().await else { return };
@@ -323,7 +609,10 @@ mod tests {
         let present = test_digest("a", 10);
         let absent = test_digest("b", 20);
 
-        store.register_blob(&mine, &present).await.unwrap();
+        store
+            .register_blob(&mine, &present, PutOutcome::Created)
+            .await
+            .unwrap();
 
         assert_eq!(
             store
@@ -350,7 +639,10 @@ mod tests {
         let Some(store) = store().await else { return };
         let namespace = namespace("touch-stale");
         let blob = test_digest("c", 30);
-        store.register_blob(&namespace, &blob).await.unwrap();
+        store
+            .register_blob(&namespace, &blob, PutOutcome::Created)
+            .await
+            .unwrap();
         sqlx::query(
             "UPDATE namespace_blobs SET last_accessed_at = now() - interval '3 days' \
              WHERE namespace = $1",
@@ -383,7 +675,10 @@ mod tests {
         let blob = test_digest("d", 40);
         // Registration already recorded now(), so a read is inside the refresh
         // interval and must not write.
-        store.register_blob(&namespace, &blob).await.unwrap();
+        store
+            .register_blob(&namespace, &blob, PutOutcome::Created)
+            .await
+            .unwrap();
 
         let before = access_timestamp(&store, &namespace).await;
         tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;

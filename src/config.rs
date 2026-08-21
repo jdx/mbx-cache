@@ -28,6 +28,15 @@ pub struct Config {
     #[arg(long, env = "MBX_CACHE_DATABASE_URL", default_value = "memory://")]
     pub database_url: String,
 
+    /// Sweep metadata older than this many days, then exit without serving.
+    ///
+    /// R2 expires the objects themselves through a lifecycle rule, which leaves
+    /// their rows behind. Keep this longer than the lifecycle age so storage
+    /// deletes first and metadata follows; the reverse drops rows for objects
+    /// that still exist and costs needless recompiles.
+    #[arg(long, env = "MBX_CACHE_SWEEP_METADATA_OLDER_THAN_DAYS")]
+    pub sweep_metadata_older_than_days: Option<u32>,
+
     #[arg(long, env = "MBX_CACHE_S3_BUCKET")]
     pub s3_bucket: Option<String>,
 
