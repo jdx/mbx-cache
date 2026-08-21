@@ -182,8 +182,8 @@ file_sha256() {
 
 prometheus_config_hash=$(file_sha256 "$project_dir/monitoring/prometheus.yml")
 grafana_config_hash=$({
-  file_sha256 "$project_dir/monitoring/grafana/dashboards/mbx-cache.json"
-  file_sha256 "$project_dir/monitoring/grafana/provisioning/dashboards/mbx-cache.yml"
+  file_sha256 "$project_dir/monitoring/grafana/dashboards/mise-cache.json"
+  file_sha256 "$project_dir/monitoring/grafana/provisioning/dashboards/mise-cache.yml"
   file_sha256 "$project_dir/monitoring/grafana/provisioning/datasources/prometheus.yml"
 } | "${sha256_command[@]}")
 grafana_config_hash=${grafana_config_hash%% *}
@@ -205,7 +205,7 @@ write_dotenv() {
 {
   write_dotenv MBX_CACHE_STORAGE s3
   write_dotenv MBX_CACHE_DATABASE_URL \
-    "postgres://mbx_cache:$MBX_CACHE_DATABASE_PASSWORD@postgres/mbx_cache"
+    "postgres://mise_cache:$MBX_CACHE_DATABASE_PASSWORD@postgres/mise_cache"
   write_dotenv MBX_CACHE_S3_BUCKET "$r2_bucket"
   write_dotenv MBX_CACHE_S3_PREFIX v1
   write_dotenv MBX_CACHE_S3_ENDPOINT "$r2_endpoint"

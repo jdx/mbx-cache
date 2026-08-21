@@ -198,7 +198,7 @@ another repository owner or workflow.
 ```sh
 curl --fail "$(terraform -chdir=deploy/ovh/terraform output -raw cache_url)/v1/status"
 ssh ubuntu@"$OVH_SSH_HOST" \
-  'cd /opt/mbx-cache && sudo docker compose ps'
+  'cd /opt/mise-cache && sudo docker compose ps'
 ```
 
 The desired host state lives in `deploy/ovh/bootstrap/mise.toml`. Re-running
@@ -245,6 +245,11 @@ resource first.
 | `tag:mise-cache-ci` | Tailscale ACL policy | CI may only advertise a tag the tailnet policy defines |
 | `mise-cache-prod.tail13c301.ts.net` | The host's MagicDNS name | Renaming the machine changes the name CI pings and reaches over SSH |
 | `mise-cache-production` | Cloudflare R2 | Pre-existing bucket; the R2 token is scoped to this exact name, and the cache's stored blobs are in it |
+| `/opt/mise-cache` | The host's filesystem | Where the running deployment already lives; a new path would stand up a second copy beside it |
+| `mise-cache` (Compose project) | Docker on the host | The project name owns the containers and volumes, so changing it starts a parallel stack that contends for ports 80 and 443 |
+| `mise_cache` (role and database) | PostgreSQL on the host | `POSTGRES_USER` and `POSTGRES_DB` only apply when a volume initialises, so an existing cluster keeps this role and a renamed URL cannot authenticate |
+| `mise-cache.conf` | `/etc/fail2ban/jail.d` | Renaming leaves the old jail in place alongside the new one |
+| `mise-cache.json`, `mise-cache.yml` | Grafana provisioning on the host | Both files would be mounted, so Grafana would show the dashboard twice |
 
 One identifier could not be preserved: GitHub's OIDC subject embeds the
 repository, so the tokens this workflow presents now say `jdx/mbx-cache`. Any
@@ -253,6 +258,10 @@ side — including the Tailscale trust credential used to join the tailnet, whic
 is what fails if the tailnet step reports `failed to exchange JWT for access
 token`.
 
-If decoupling these from the brand becomes worthwhile, move them to repository
-variables so the values live with the infrastructure rather than in the
-workflow.
+Environment variable *names* passed between `deploy.sh` and Compose are not in
+this category and do use the `MBX_CACHE_` prefix: both ends live in this
+repository, so nothing outside it depends on them.
+
+If decoupling the identifiers above from the brand becomes worthwhile, either
+move them to repository variables so the values live with the infrastructure, or
+migrate the host once and rename them together.
