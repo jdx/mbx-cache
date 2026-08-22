@@ -42,11 +42,17 @@ tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io"] }
-tower-http = { version = "0.6", features = ["limit", "trace"] }
+tower-http = { version = "0.6", features = [
+  "compression-zstd",
+  "decompression-zstd",
+  "limit",
+  "trace",
+] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [dev-dependencies]
+zstd = "0.13"
 http-body-util = "0.1"
 rsa = { version = "0.9", features = ["pem"] }
 tower = { version = "0.5", features = ["util"] }

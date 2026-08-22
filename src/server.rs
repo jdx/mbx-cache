@@ -12,7 +12,12 @@ use sha2::Digest as _;
 use std::{collections::HashSet, io, sync::Arc, time::Instant};
 use tempfile::NamedTempFile;
 use tokio::io::AsyncWriteExt;
-use tower_http::{limit::RequestBodyLimitLayer, trace::TraceLayer};
+use tower_http::{
+    compression::{CompressionLayer, CompressionLevel},
+    decompression::RequestDecompressionLayer,
+    limit::RequestBodyLimitLayer,
+    trace::TraceLayer,
+};
 
 use crate::{
     auth::{Access, Authorizer},
@@ -61,13 +66,29 @@ impl AppState {
 
 pub fn router(state: AppState) -> Router {
     let limit = usize::try_from(state.max_blob_bytes).unwrap_or(usize::MAX);
-    Router::new()
-        .route("/v1/status", get(status))
-        .route("/v1/capabilities", get(capabilities))
+    // Blob uploads are the only compressed requests, so decompression is
+    // scoped to them rather than applied to every route. The JSON handlers
+    // buffer and parse their whole body before they authenticate anyone, and
+    // there is no reason to let an unauthenticated caller spend a few
+    // kilobytes to fill that buffer. Axum's own 2 MB default bounds them --
+    // `json_routes_keep_axums_default_body_limit` pins it -- and the largest
+    // legitimate request, MAX_BATCH_ITEMS digests, is about 1.1 MB.
+    let blobs = Router::new()
         .route(
             "/v1/blobs/{algorithm}/{hash}/{size}",
             get(get_blob).put(put_blob),
         )
+        // Innermost: what the handler reads, after decoding.
+        .layer(RequestBodyLimitLayer::new(limit))
+        .layer(RequestDecompressionLayer::new())
+        // Outermost: what crosses the wire. Decoding leaves this unbounded on
+        // its own -- a skippable frame is arbitrarily large and decodes to
+        // nothing, so a limit on decoded bytes never sees it.
+        .layer(RequestBodyLimitLayer::new(limit));
+    Router::new()
+        .route("/v1/status", get(status))
+        .route("/v1/capabilities", get(capabilities))
+        .merge(blobs)
         .route("/v1/blobs:missing", post(missing_blobs))
         .route("/v1/blobs:pack", post(pack_blobs))
         .route(
@@ -79,7 +100,9 @@ pub fn router(state: AppState) -> Router {
             get(get_action_manifest).put(put_action_manifest),
         )
         .route("/metrics", get(metrics))
-        .layer(RequestBodyLimitLayer::new(limit))
+        // Fastest: rustc artifacts still compress well below level 1's cost,
+        // and a cache server's CPU is better spent serving than squeezing.
+        .layer(CompressionLayer::new().quality(CompressionLevel::Fastest))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -102,7 +125,7 @@ async fn capabilities(State(state): State<AppState>) -> impl IntoResponse {
     Json(serde_json::json!({
         "protocol":{"major":1,"minor":0},
         "digest_algorithms":["blake3","sha256"],
-        "compressors":["identity"],
+        "compressors":["identity","zstd"],
         "action_kinds":{
             "rustc":{"action_schema":1,"metadata_schema":1},
             "task":{"action_schema":1,"metadata_schema":1}
@@ -1252,6 +1275,177 @@ mod tests {
         let headers = response.headers().clone();
         let body = response.into_body().collect().await.unwrap().to_bytes();
         (headers, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    /// A zstd frame that decodes to almost nothing but is large on the wire.
+    ///
+    /// Skippable frames carry arbitrary bytes a decoder discards, so they are
+    /// the cheapest way to ask a server to read a lot and produce nothing.
+    fn skippable_frame(payload_bytes: usize) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(payload_bytes + 8);
+        frame.extend_from_slice(&0x184D_2A50_u32.to_le_bytes());
+        frame.extend_from_slice(&(payload_bytes as u32).to_le_bytes());
+        frame.extend(std::iter::repeat_n(0_u8, payload_bytes));
+        frame
+    }
+
+    async fn app_with_blob_limit(max_blob_bytes: u64) -> (Router, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let blobs = Arc::new(FilesystemStore::new(directory.path()).await.unwrap());
+        let metadata = Arc::new(MemoryMetadata::default());
+        let auth = Authorizer::new(None, None, true).await.unwrap();
+        (
+            router(AppState::new(blobs, metadata, auth, max_blob_bytes)),
+            directory,
+        )
+    }
+
+    #[tokio::test]
+    async fn json_routes_do_not_decompress_their_bodies() {
+        // Compression is scoped to blob uploads. These handlers buffer and
+        // parse the whole body before they authenticate anyone, so an
+        // unauthenticated caller must not be able to spend a few kilobytes to
+        // fill that buffer.
+        let (app, _directory) = app_with_blob_limit(1024 * 1024 * 1024).await;
+        let payload = serde_json::json!({"digests": []}).to_string();
+
+        // Control: uncompressed, the same body is understood.
+        let response = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                "/v1/blobs:missing".into(),
+                Body::from(payload.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Compressed, it is not: the route never decodes, so the extractor
+        // sees zstd bytes and rejects them rather than expanding anything.
+        let compressed = zstd::encode_all(payload.as_bytes(), 0).unwrap();
+        let mut encoded = request("POST", "/v1/blobs:missing".into(), Body::from(compressed));
+        encoded
+            .headers_mut()
+            .insert(header::CONTENT_ENCODING, "zstd".parse().unwrap());
+        let response = app.oneshot(encoded).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn json_routes_keep_axums_default_body_limit() {
+        // A generous blob allowance must not become a generous JSON allowance.
+        // Axum's 2 MB default is what bounds these; pinned here so raising the
+        // blob limit, or a change in that default, cannot loosen them quietly.
+        let (app, _directory) = app_with_blob_limit(1024 * 1024 * 1024).await;
+        let oversized = vec![b'a'; 4 * 1024 * 1024];
+
+        let response = app
+            .oneshot(request(
+                "POST",
+                "/v1/blobs:missing".into(),
+                Body::from(oversized),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn blob_uploads_bound_what_crosses_the_wire() {
+        // Decoding leaves the encoded stream unbounded on its own: a skippable
+        // frame is arbitrarily large and decodes to nothing, so a limit on
+        // decoded bytes never sees it and the connection reads until EOF.
+        let digest = digest(b"unused");
+        let uri = format!(
+            "/v1/blobs/{}/{}/{}",
+            digest.algorithm, digest.hash, digest.size
+        );
+
+        // Declared length: refused outright, without reading the body.
+        let (app, _directory) = app_with_blob_limit(64 * 1024).await;
+        let frame = skippable_frame(256 * 1024);
+        let length = frame.len();
+        let mut declared = request("PUT", uri.clone(), Body::from(frame.clone()));
+        declared
+            .headers_mut()
+            .insert(header::CONTENT_ENCODING, "zstd".parse().unwrap());
+        declared
+            .headers_mut()
+            .insert(header::CONTENT_LENGTH, length.to_string().parse().unwrap());
+        let response = app.oneshot(declared).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        // Chunked, which is how compressed uploads are actually sent, since
+        // the encoded length is unknown up front. The limit still cuts the
+        // stream; the decoder just reports the truncation it runs into before
+        // the limit's own error surfaces, so this is a 400 rather than a 413.
+        // Either way the server stops reading at the limit, which is the part
+        // that matters.
+        let (app, _directory) = app_with_blob_limit(64 * 1024).await;
+        let mut chunked = request("PUT", uri, Body::from(frame));
+        chunked
+            .headers_mut()
+            .insert(header::CONTENT_ENCODING, "zstd".parse().unwrap());
+        let response = app.oneshot(chunked).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn round_trips_zstd_compressed_transfers() {
+        let (app, _directory) = test_app().await;
+        // Long enough to clear the compression layer's minimum-size predicate,
+        // repetitive enough that compression visibly shrinks it.
+        let bytes = b"cached output ".repeat(64);
+        let digest = digest(&bytes);
+        let uri = format!(
+            "/v1/blobs/{}/{}/{}",
+            digest.algorithm, digest.hash, digest.size
+        );
+
+        // Upload compressed: the digest describes the *decompressed* content,
+        // which is what the handler must see after the decompression layer.
+        let compressed = zstd::encode_all(bytes.as_slice(), 0).unwrap();
+        assert!(compressed.len() < bytes.len());
+        let mut upload = request("PUT", uri.clone(), Body::from(compressed));
+        upload
+            .headers_mut()
+            .insert(header::CONTENT_ENCODING, "zstd".parse().unwrap());
+        let response = app.clone().oneshot(upload).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        // Download compressed: the body on the wire is zstd, and decoding it
+        // returns the exact stored bytes.
+        let mut download = request("GET", uri.clone(), Body::empty());
+        download
+            .headers_mut()
+            .insert(header::ACCEPT_ENCODING, "zstd".parse().unwrap());
+        let response = app.clone().oneshot(download).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+            Some("zstd")
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(body.len() < bytes.len());
+        assert_eq!(zstd::decode_all(&body[..]).unwrap(), bytes);
+
+        // A client that never asks for compression still gets identity bytes,
+        // which is what keeps already-released clients working unchanged.
+        let response = app
+            .oneshot(request("GET", uri, Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get(header::CONTENT_ENCODING).is_none());
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            bytes.as_slice()
+        );
     }
 
     #[tokio::test]
