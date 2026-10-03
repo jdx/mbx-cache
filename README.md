@@ -75,7 +75,7 @@ with `MBX_REMOTE_OIDC_AUDIENCE` — mbx acquires the OIDC token itself. The
 client keeps pull requests read-only and disables the remote for tag builds
 regardless of the configured mode; see the
 [remote cache documentation](https://mr-boxington.jdx.dev/remote-cache) and
-[GitHub Actions setup](https://mr-boxington.jdx.dev/github-actions).
+[GitHub Actions setup](https://mr-boxington.jdx.dev/github-action).
 
 ## Configuration
 
