@@ -16,6 +16,7 @@ jobs:
     # The numeric repository ID survives renames, unlike github.repository.
     if: github.repository_id == '1320413482'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:

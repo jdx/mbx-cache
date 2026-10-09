@@ -7,12 +7,20 @@ on:
 
 permissions: {}
 
+# A release or deployment in flight must finish; the newest waiting run replaces
+# older waiting ones, since release-plz works from the state of main.
+concurrency:
+  group: release-plz
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   release:
     name: Release
     # The numeric repository ID survives renames, unlike github.repository.
     if: github.repository_id == '1320413482'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
       id-token: write
@@ -139,6 +147,7 @@ jobs:
         env:
           TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
         run: |
+          set -o pipefail
           response=$(curl --fail --silent --show-error \
             --connect-timeout 5 --max-time 15 \
             --get --data-urlencode "audience=$TS_AUDIENCE" \
@@ -146,7 +155,7 @@ jobs:
             "$ACTIONS_ID_TOKEN_REQUEST_URL") || exit 0
           token=$(jq -er '.value | strings | select(length > 0)' <<<"$response") || exit 0
           echo "::add-mask::$token"
-          payload=$(cut -d. -f2 <<<"$token" | tr '_-' '/+')
+          payload=$(cut -d. -f2 <<<"$token" | tr '_-' '/+') || exit 0
           case $(( ${#payload} % 4 )) in
             2) payload="$payload==" ;;
             3) payload="$payload=" ;;
@@ -180,6 +189,7 @@ jobs:
         env:
           CACHE_NAMESPACE: jdx/mr-boxington-cache
         run: |
+          set -o pipefail
           response=$(curl --fail --silent --show-error \
             --get \
             --data-urlencode "audience=$CACHE_URL" \
@@ -219,6 +229,7 @@ jobs:
     needs: [release, image]
     if: needs.release.outputs.tag != ''
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
@@ -233,6 +244,7 @@ jobs:
     needs: release
     if: github.repository_id == '1320413482'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
       pull-requests: write

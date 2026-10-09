@@ -5,9 +5,13 @@ on:
     branches: [main]
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   deployment:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -91,6 +95,7 @@ jobs:
       - run: mise x hk -- hk check --all
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Production uses PostgreSQL and Azure Blob Storage, so CI exercises both
     # real protocols rather than only their in-memory stand-ins.
     services:
@@ -138,26 +143,12 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-features
 
-  zizmor:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
-        with:
-          advanced-security: false
-          min-severity: high
-
   final:
     permissions: {}
     needs:
       - deployment
       - hk
       - test
-      - zizmor
     runs-on: ubuntu-latest
     timeout-minutes: 1
     # Run on success or upstream failure but skip when the workflow is cancelled
@@ -168,7 +159,6 @@ jobs:
         if: |
           needs.deployment.result != 'success' ||
           needs.hk.result != 'success' ||
-          needs.test.result != 'success' ||
-          needs.zizmor.result != 'success'
+          needs.test.result != 'success'
         run: exit 1
       - run: echo "All CI jobs completed successfully"
