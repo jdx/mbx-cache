@@ -3,11 +3,20 @@ amends "package://github.com/jdx/hk/releases/download/v2.5.0/hk@2.5.0#/Config.pk
 local linters = new Mapping<String, Step> {
     // lints GitHub Actions workflows (jdx/jactionlint, a maintained actionlint fork)
     ["jactionlint"] {
-        glob = List(".github/workflows/*.yml", ".github/workflows/*.yaml")
+        glob = List(
+            ".github/workflows/*.yml",
+            ".github/workflows/*.yaml",
+            ".github/actions/**/action.y*ml",
+            ".github/dependabot.y*ml"
+        )
         batch = true
         check = new CommandSpec {
             command = "jactionlint {{ files }}"
             effect = "read"
+        }
+        fix = new CommandSpec {
+            command = "jactionlint --fix {{ files }}"
+            effect = "write"
         }
     }
 }

@@ -27,6 +27,12 @@ on:
 
 permissions: {}
 
+# Releases are not cancelled midway. The group is per ref so it never collides
+# with the group of release-plz.yml, which calls this workflow.
+concurrency:
+  group: release-image-${{ inputs.tag || inputs.ref }}
+  cancel-in-progress: false
+
 jobs:
   prepare:
     name: Prepare container image
@@ -72,6 +78,9 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          # The job publishes, so it must not restore a cached buildx binary.
+          cache-binary: false
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
@@ -93,8 +102,6 @@ jobs:
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=ghcr.io/jdx/mbx-cache,push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=image-${{ matrix.artifact }}
-          cache-to: type=gha,mode=max,scope=image-${{ matrix.artifact }}
           provenance: mode=max
           sbom: true
       - name: Export image digest
@@ -131,6 +138,9 @@ jobs:
           pattern: digests-*
           merge-multiple: true
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          # The job publishes, so it must not restore a cached buildx binary.
+          cache-binary: false
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
