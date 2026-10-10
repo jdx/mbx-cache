@@ -7,12 +7,12 @@ on:
 
 permissions: {}
 
-# A release or deployment in flight must finish; the newest waiting run replaces
-# older waiting ones, since release-plz works from the state of main.
+# A release or deployment in flight must finish (no cancel). The default queue keeps one
+# pending run and replaces it with the newest: release-plz acts on the SHA it checked out, so
+# stale runs queued from older commits would be wasteful and could build and deploy old state.
 concurrency:
   group: release-plz
   cancel-in-progress: false
-  queue: max
 
 jobs:
   release:
@@ -20,7 +20,7 @@ jobs:
     # The numeric repository ID survives renames, unlike github.repository.
     if: github.repository_id == '1320413482'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: write
       id-token: write
@@ -80,7 +80,7 @@ jobs:
     needs: image
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     environment: production
     concurrency:
       group: mbx-cache-production
@@ -229,7 +229,7 @@ jobs:
     needs: [release, image]
     if: needs.release.outputs.tag != ''
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:
@@ -244,7 +244,7 @@ jobs:
     needs: release
     if: github.repository_id == '1320413482'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: write
       pull-requests: write
