@@ -93,6 +93,10 @@ jobs:
           version: 2026.10.3
           cache: false
       - run: mise x hk -- hk check --all
+        env:
+          # online checks (vulnerable, impostor and stale action refs) run in CI only
+          JACTIONLINT_ONLINE: 1
+          GITHUB_TOKEN: ${{ github.token }}
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30

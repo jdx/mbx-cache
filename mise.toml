@@ -3,5 +3,5 @@ min_version = "2026.9.7"
 [tools]
 # hk.pkl amends a pinned hk package; the tool itself floats and is resolved by mise.lock.
 hk = { version = "latest", minimum_release_age = "0s" }
-jactionlint = "latest"
+jactionlint = "2.1.0"
 pkl = "latest"
